@@ -1,9 +1,17 @@
-from fastapi import Depends, Request
+from typing import Optional
+
+from fastapi import Depends, Query, Request
 from routers.base_api_router import BaseAPIRouter
-from authorization.abac_permission_check import ABACDeviceListFilter, ABACDeviceListFilterResult
+from authorization.abac_permission_check import (
+    ABACDeviceListFilter,
+    ABACDeviceListFilterResult,
+    evaluate_permission,
+)
 from authorization.permission_types import Device
 from db.repos.device import DeviceRepository
 from db.repos.device_template import DeviceTemplateRepository
+from db.repos.endpoint import EndpointRepository
+from db.repos.user import UserRepository
 from db.session import get_repository
 from .routes.get_devices import get_devices, populate_cache_from_iot_hub_query
 from .routes.create_device import create_device
@@ -18,13 +26,31 @@ devices = BaseAPIRouter(prefix="/devices", tags=["Devices"])
 @devices.get("")
 async def get_devices_route(
     request: Request,
+    include_endpoints: bool = Query(
+        default=False,
+        description="Also return each device's endpoints in an `endpoints` list; "
+        "silently omitted if the caller may not read endpoints",
+    ),
+    limit: Optional[int] = Query(
+        default=None, ge=1, le=1000, description="Maximum number of devices to return"
+    ),
+    offset: int = Query(default=0, ge=0, description="Number of devices to skip"),
     abac_context: ABACDeviceListFilterResult = Depends(ABACDeviceListFilter(Device.READ)),
     repo: DeviceRepository = Depends(get_repository(DeviceRepository)),
+    endpoint_repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
+    user_repo: UserRepository = Depends(get_repository(UserRepository)),
 ):
+    if include_endpoints:
+        user_data = await user_repo.get_teams_with_roles_and_scopes(abac_context["user_id"])
+        include_endpoints = bool(user_data) and evaluate_permission(Device.ENDPOINT_READ, user_data)
     return await get_devices(
         repo=repo,
         filter_device=abac_context["filter_device"],
         query_params=request.query_params,
+        endpoint_repo=endpoint_repo,
+        include_endpoints=include_endpoints,
+        limit=limit,
+        offset=offset,
     )
 
 @devices.put("/{device_id}")

@@ -8,6 +8,7 @@ from starlette.datastructures import QueryParams
 from constants import IOT_HUB_NAME
 from async_requests import post_async
 from db.repos.device import DeviceRepository
+from db.repos.endpoint import EndpointRepository
 from exceptions import IoTBackendAPIError, APIError
 from helper import get_iothub_auth_headers
 
@@ -44,6 +45,10 @@ async def get_devices(
     repo: DeviceRepository,
     filter_device: Callable[[Dict], bool],
     query_params: QueryParams | None = None,
+    endpoint_repo: Optional[EndpointRepository] = None,
+    include_endpoints: bool = False,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ):
     metadata_filters = _extract_metadata_filters(query_params)
     matching_device_ids = None
@@ -90,7 +95,18 @@ async def get_devices(
 
         devices_output.append(dev_output)
 
-    return devices_output
+    # Stable order so pages don't overlap or skip devices between requests.
+    devices_output.sort(key=lambda d: d["deviceId"] or "")
+    page = devices_output[offset:] if limit is None else devices_output[offset:offset + limit]
+
+    if include_endpoints and endpoint_repo is not None:
+        endpoints_by_device = await endpoint_repo.get_endpoints_by_device_ids(
+            [d["deviceId"] for d in page]
+        )
+        for dev_output in page:
+            dev_output["endpoints"] = endpoints_by_device.get(dev_output["deviceId"], [])
+
+    return page
 
 
 async def populate_cache_from_iot_hub_query(repo: DeviceRepository):

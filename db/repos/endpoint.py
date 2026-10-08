@@ -41,6 +41,13 @@ class EndpointRepository(ABC):
     ) -> List[Dict[str, Any]]: ...
 
     @abstractmethod
+    async def get_endpoints_by_device_ids(
+        self, device_ids: List[str]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Resolved endpoints of all given devices in one query, keyed by device id."""
+        ...
+
+    @abstractmethod
     async def get_endpoint(self, endpoint_id: str) -> Optional[Dict[str, Any]]: ...
 
     @abstractmethod
