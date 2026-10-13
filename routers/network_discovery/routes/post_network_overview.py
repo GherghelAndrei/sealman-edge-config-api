@@ -1,5 +1,4 @@
 import ipaddress
-import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,8 +14,6 @@ from routers.network_discovery.schemas import (
     NetworkScan,
 )
 
-logger = logging.getLogger(__name__)
-
 
 def _resolve_status_change(
     previous: Optional[Tuple[str, datetime]], status: str, now: datetime
@@ -30,22 +27,6 @@ def _resolve_status_change(
         return now
     return previous[1]
 
-
-def _build_instance_data(
-    fields: Dict[str, Any], locked_field_key: Optional[str], locked_value: Any
-) -> Dict[str, Any]:
-    data: Dict[str, Any] = {}
-    for field_key, field_def in fields.items():
-        default = field_def.get("default")
-        if default is not None:
-            data[field_key] = default
-    if locked_field_key is not None:
-        data[locked_field_key] = locked_value
-    return data
-
-
-def _has_missing_required(fields: Dict[str, Any], data: Dict[str, Any]) -> bool:
-    return any(field_def.get("required") and data.get(field_key) is None for field_key, field_def in fields.items())
 
 
 async def _build_last_known_endpoint(
@@ -287,41 +268,14 @@ async def build_network_overview(
             endpoint_data = configured_endpoint["endpoint_data"]
             configured_services = await service_repo.get_services(endpoint_id=endpoint_id)
         elif default_endpoint_type is not None:
-            # A host matching a type's default IP is automatically instantiated as a real
-            # Endpoint - but only if every required field can actually be satisfied (the ip
-            # field from the observed value, everything else from the type's own defaults).
-            # Otherwise we can't safely auto-create it and it stays a "default" suggestion.
-            created_endpoint = None
-            ip_field = role_field_key(default_endpoint_type["fields"], default_endpoint_type["mapping"], "ip")
-            instance_data = _build_instance_data(default_endpoint_type["fields"], ip_field, ip_str)
-            if not _has_missing_required(default_endpoint_type["fields"], instance_data):
-                try:
-                    created_endpoint = await endpoint_repo.create_endpoint(
-                        device_id=device,
-                        type_id=default_endpoint_type["type_id"],
-                        endpoint_data=instance_data,
-                    )
-                except Exception:
-                    logger.exception(
-                        f"failed to auto-create endpoint instance for device <{device}> ip <{ip_str}>"
-                    )
-
-            if created_endpoint is not None:
-                configured_endpoints_by_ip[ip_str] = created_endpoint
-                source = "configured"
-                endpoint_id = created_endpoint["endpoint_id"]
-                type_id = created_endpoint["type_id"]
-                type_label = created_endpoint["type_label"]
-                type_description = created_endpoint["type_description"]
-                endpoint_data = created_endpoint["endpoint_data"]
-                configured_services = await service_repo.get_services(endpoint_id=endpoint_id)
-            else:
-                source = "default"
-                endpoint_id = None
-                type_id = default_endpoint_type["type_id"]
-                type_label = default_endpoint_type["label"]
-                type_description = default_endpoint_type["description"]
-                endpoint_data = None
+            # A host matching a type's default IP is only a suggestion: that type is pre-selected
+            # and the user decides whether to create the endpoint (POST /endpoints).
+            source = "default"
+            endpoint_id = None
+            type_id = default_endpoint_type["type_id"]
+            type_label = default_endpoint_type["label"]
+            type_description = default_endpoint_type["description"]
+            endpoint_data = None
         else:
             source = "unidentified"
             endpoint_id = None
@@ -376,49 +330,18 @@ async def build_network_overview(
                 continue
 
             if default_service_type is not None:
-                # Same auto-create rule as endpoints - only possible once the endpoint itself
-                # is a real instance (services are FK'd to an endpoint_id) and required fields
-                # can be satisfied from the observed port plus the type's own defaults.
-                created_service = None
-                if endpoint_id is not None:
-                    port_field = role_field_key(default_service_type["fields"], default_service_type["mapping"], "port")
-                    instance_data = _build_instance_data(default_service_type["fields"], port_field, port_num)
-                    if not _has_missing_required(default_service_type["fields"], instance_data):
-                        try:
-                            created_service = await service_repo.create_service(
-                                endpoint_id=endpoint_id,
-                                type_id=default_service_type["type_id"],
-                                service_data=instance_data,
-                            )
-                        except Exception:
-                            logger.exception(
-                                f"failed to auto-create service instance for endpoint <{endpoint_id}> port <{port_num}>"
-                            )
-
-                if created_service is not None:
-                    mapped_ports.append(MappedPort(
-                        port=port_num,
-                        status=port_status.status,
-                        lastStatusChange=port_changed_at.isoformat(),
-                        source="configured",
-                        service_id=created_service["service_id"],
-                        type_id=created_service["type_id"],
-                        type_label=created_service["type_label"],
-                        type_description=created_service["type_description"],
-                        service_data=created_service["service_data"],
-                        browser_kind=default_service_type["browser_kind"],
-                    ))
-                else:
-                    mapped_ports.append(MappedPort(
-                        port=port_num,
-                        status=port_status.status,
-                        lastStatusChange=port_changed_at.isoformat(),
-                        source="default",
-                        type_id=default_service_type["type_id"],
-                        type_label=default_service_type["label"],
-                        type_description=default_service_type["description"],
-                        browser_kind=default_service_type["browser_kind"],
-                    ))
+                # A port matching a service type's default port is only a suggestion; the user
+                # creates the service through POST /services.
+                mapped_ports.append(MappedPort(
+                    port=port_num,
+                    status=port_status.status,
+                    lastStatusChange=port_changed_at.isoformat(),
+                    source="default",
+                    type_id=default_service_type["type_id"],
+                    type_label=default_service_type["label"],
+                    type_description=default_service_type["description"],
+                    browser_kind=default_service_type["browser_kind"],
+                ))
                 continue
 
             # A port that isn't backed by any configured/default service is only ever reported
