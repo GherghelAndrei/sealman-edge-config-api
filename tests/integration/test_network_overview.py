@@ -230,6 +230,44 @@ class TestOverviewWithoutAddress:
         assert "ip" not in entry
 
 
+class TestNonIPv4IpValue:
+    async def _world(self, client, db_session, value):
+        await AbacFixtures(db_session).setup(devices={DEVICE: {}})
+        endpoint_type = await _endpoint_type(client, {"addr": STRING_FIELD}, {"addr": "ip"})
+        return await _endpoint(client, endpoint_type, {"addr": value})
+
+    async def test_live_overview_lists_endpoint_unknown_without_history(self, client, db_session):
+        endpoint_id = await self._world(client, db_session, "plc-hostname")
+
+        entries = await _overview(client, _scan([_host("10.20.0.5")], []))
+
+        entry = next(e for e in entries if e.get("endpoint_id") == endpoint_id)
+        assert entry["status"] == "unknown"
+        assert entry["ip"] == "plc-hostname"
+        assert "lastStatusChange" not in entry
+        statuses = await repo_registry.get(HostStatusRepository)(db_session).get_host_statuses(DEVICE)
+        assert "plc-hostname" not in statuses
+
+    async def test_last_known_overview_lists_endpoint_unknown(self, client, db_session):
+        endpoint_id = await self._world(client, db_session, "plc-hostname")
+
+        response = await client.get(f"/{DEVICE}/network/last-known")
+
+        assert response.status_code == 200, response.text
+        entry = next(e for e in response.json()["endpoints"] if e.get("endpoint_id") == endpoint_id)
+        assert entry["status"] == "unknown"
+        assert entry["ip"] == "plc-hostname"
+
+    async def test_ipv6_and_blank_values_do_not_fail_the_overview(self, client, db_session):
+        v6 = await self._world(client, db_session, "fe80::1")
+        endpoint_type = (await client.get(f"/endpoints/{v6}")).json()["type_id"]
+        blank = await _endpoint(client, endpoint_type, {"addr": " "})
+
+        entries = await _overview(client, _scan([], []))
+
+        assert {e["status"] for e in entries if e.get("endpoint_id") in (v6, blank)} == {"unknown"}
+
+
 class TestDiscoveryUsesStoredValuesOnly:
     """User decision I1: a type's field default is a scan suggestion only, never the live value."""
 

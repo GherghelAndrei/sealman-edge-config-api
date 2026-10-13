@@ -58,13 +58,25 @@ def _unknown_port(
     )
 
 
+def _is_probeable_ip(value: Any) -> bool:
+    """Whether a stored `ip`-role value is a valid IPv4 address. Admins can give the ip role to any
+    string field, so stored values may be hostnames, IPv6, blanks etc."""
+    try:
+        ipaddress.IPv4Address(str(value))
+    except ValueError:
+        return False
+    return True
+
+
 async def _build_endpoint_without_ip(
     configured_endpoint: Dict[str, Any],
     service_types: Dict[str, Dict[str, Any]],
     service_repo: ServiceRepository,
+    stored_ip: Optional[str] = None,
 ) -> MappedEndpoint:
-    """A configured endpoint without an `ip`-role value can't be probed: it is listed with status
-    "unknown" and no status history, and so are its services."""
+    """A configured endpoint without a probe-able `ip`-role value (missing, or not a valid IPv4
+    address) can't be probed: it is listed with status "unknown" and no status history, and so are
+    its services. A non-empty stored value is still shown as `ip`."""
     configured_services = await service_repo.get_services(endpoint_id=configured_endpoint["endpoint_id"])
     mapped_ports: List[MappedPort] = []
     for service in configured_services:
@@ -73,6 +85,7 @@ async def _build_endpoint_without_ip(
             continue
         mapped_ports.append(_unknown_port(service, service_type, _port_number(service, service_type)))
     return MappedEndpoint(
+        ip=stored_ip,
         status="unknown",
         source="configured",
         endpoint_id=configured_endpoint["endpoint_id"],
@@ -234,8 +247,10 @@ async def build_last_known_network_overview(
             continue
         ip_field = role_field_key(endpoint_type["fields"], endpoint_type["mapping"], "ip")
         ip_value = stored_role_value(endpoint["raw_endpoint_data"], ip_field)
-        if not ip_value:
-            mapped_endpoints.append(await _build_endpoint_without_ip(endpoint, service_types, service_repo))
+        if not ip_value or not _is_probeable_ip(ip_value):
+            mapped_endpoints.append(await _build_endpoint_without_ip(
+                endpoint, service_types, service_repo, str(ip_value) if ip_value else None,
+            ))
             continue
         mapped_endpoints.append(await _build_last_known_endpoint(
             str(ip_value), endpoint, service_types, service_repo, previous_host_statuses, previous_port_statuses, now,
@@ -265,17 +280,17 @@ async def build_network_overview(
     new_port_statuses: Dict[Tuple[str, int], Tuple[str, datetime]] = {}
 
     configured_endpoints_by_ip: Dict[str, List[Dict[str, Any]]] = {}
-    endpoints_without_ip: List[Dict[str, Any]] = []
+    endpoints_without_ip: List[Tuple[Dict[str, Any], Optional[str]]] = []
     for endpoint in configured_endpoints:
         endpoint_type = endpoint_types.get(endpoint["type_id"])
         if endpoint_type is None:
             continue
         ip_field = role_field_key(endpoint_type["fields"], endpoint_type["mapping"], "ip")
         ip_value = stored_role_value(endpoint["raw_endpoint_data"], ip_field)
-        if ip_value:
+        if ip_value and _is_probeable_ip(ip_value):
             configured_endpoints_by_ip.setdefault(str(ip_value), []).append(endpoint)
         else:
-            endpoints_without_ip.append(endpoint)
+            endpoints_without_ip.append((endpoint, str(ip_value) if ip_value else None))
     # Endpoints sharing an IP: a stable order decides which one carries the host's unclaimed ports.
     for ip_endpoints in configured_endpoints_by_ip.values():
         ip_endpoints.sort(key=lambda e: (e["created_at"], e["endpoint_id"]))
@@ -514,8 +529,8 @@ async def build_network_overview(
             ))
 
     # Endpoints without an `ip`-role value can't be probed; listed as "unknown", no history.
-    for endpoint in endpoints_without_ip:
-        mapped_endpoints.append(await _build_endpoint_without_ip(endpoint, service_types, service_repo))
+    for endpoint, stored_ip in endpoints_without_ip:
+        mapped_endpoints.append(await _build_endpoint_without_ip(endpoint, service_types, service_repo, stored_ip))
 
     await host_status_repo.set_host_statuses(device, new_host_statuses)
     await host_status_repo.set_port_statuses(device, new_port_statuses)
