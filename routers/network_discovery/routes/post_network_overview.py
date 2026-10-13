@@ -28,6 +28,61 @@ def _resolve_status_change(
     return previous[1]
 
 
+def _port_number(service: Dict[str, Any], service_type: Dict[str, Any]) -> Optional[int]:
+    """The service's `port`-role value as an int, or None if it has none."""
+    port_field = role_field_key(service_type["fields"], service_type["mapping"], "port")
+    port_value = resolved_value(service["service_data"], port_field)
+    if port_value is None:
+        return None
+    try:
+        return int(port_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _unknown_port(
+    service: Dict[str, Any], service_type: Dict[str, Any], port_num: Optional[int]
+) -> MappedPort:
+    """A configured service that can't be probed - it has no port value, or its endpoint has no
+    IP. Listed with status "unknown" and no status history."""
+    return MappedPort(
+        port=port_num,
+        status="unknown",
+        source="configured",
+        service_id=service["service_id"],
+        type_id=service["type_id"],
+        type_label=service["type_label"],
+        type_description=service["type_description"],
+        service_data=service["service_data"],
+        browser_kind=service_type["browser_kind"],
+    )
+
+
+async def _build_endpoint_without_ip(
+    configured_endpoint: Dict[str, Any],
+    service_types: Dict[str, Dict[str, Any]],
+    service_repo: ServiceRepository,
+) -> MappedEndpoint:
+    """A configured endpoint without an `ip`-role value can't be probed: it is listed with status
+    "unknown" and no status history, and so are its services."""
+    configured_services = await service_repo.get_services(endpoint_id=configured_endpoint["endpoint_id"])
+    mapped_ports: List[MappedPort] = []
+    for service in configured_services:
+        service_type = service_types.get(service["type_id"])
+        if service_type is None:
+            continue
+        mapped_ports.append(_unknown_port(service, service_type, _port_number(service, service_type)))
+    return MappedEndpoint(
+        status="unknown",
+        source="configured",
+        endpoint_id=configured_endpoint["endpoint_id"],
+        type_id=configured_endpoint["type_id"],
+        type_label=configured_endpoint["type_label"],
+        type_description=configured_endpoint["type_description"],
+        endpoint_data=configured_endpoint["endpoint_data"],
+        ports=mapped_ports,
+    )
+
 
 async def _build_last_known_endpoint(
     ip_str: str,
@@ -52,13 +107,9 @@ async def _build_last_known_endpoint(
         service_type = service_types.get(service["type_id"])
         if service_type is None:
             continue
-        port_field = role_field_key(service_type["fields"], service_type["mapping"], "port")
-        port_value = resolved_value(service["service_data"], port_field)
-        if port_value is None:
-            continue
-        try:
-            port_num = int(port_value)
-        except (TypeError, ValueError):
+        port_num = _port_number(service, service_type)
+        if port_num is None:
+            mapped_ports.append(_unknown_port(service, service_type, None))
             continue
         previous = previous_port_statuses.get((ip_str, port_num))
         mapped_ports.append(MappedPort(
@@ -120,13 +171,9 @@ async def _build_confirmed_offline_endpoint(
         service_type = service_types.get(service["type_id"])
         if service_type is None:
             continue
-        port_field = role_field_key(service_type["fields"], service_type["mapping"], "port")
-        port_value = resolved_value(service["service_data"], port_field)
-        if port_value is None:
-            continue
-        try:
-            port_num = int(port_value)
-        except (TypeError, ValueError):
+        port_num = _port_number(service, service_type)
+        if port_num is None:
+            mapped_ports.append(_unknown_port(service, service_type, None))
             continue
         port_changed_at = _resolve_status_change(previous_port_statuses.get((ip_str, port_num)), "offline", now)
         new_port_statuses[(ip_str, port_num)] = ("offline", port_changed_at)
@@ -188,6 +235,7 @@ async def build_last_known_network_overview(
         ip_field = role_field_key(endpoint_type["fields"], endpoint_type["mapping"], "ip")
         ip_value = resolved_value(endpoint["endpoint_data"], ip_field)
         if not ip_value:
+            mapped_endpoints.append(await _build_endpoint_without_ip(endpoint, service_types, service_repo))
             continue
         mapped_endpoints.append(await _build_last_known_endpoint(
             str(ip_value), endpoint, service_types, service_repo, previous_host_statuses, previous_port_statuses, now,
@@ -217,6 +265,7 @@ async def build_network_overview(
     new_port_statuses: Dict[Tuple[str, int], Tuple[str, datetime]] = {}
 
     configured_endpoints_by_ip: Dict[str, Dict[str, Any]] = {}
+    endpoints_without_ip: List[Dict[str, Any]] = []
     for endpoint in configured_endpoints:
         endpoint_type = endpoint_types.get(endpoint["type_id"])
         if endpoint_type is None:
@@ -225,6 +274,8 @@ async def build_network_overview(
         ip_value = resolved_value(endpoint["endpoint_data"], ip_field)
         if ip_value:
             configured_endpoints_by_ip[str(ip_value)] = endpoint
+        else:
+            endpoints_without_ip.append(endpoint)
 
     default_endpoint_types_by_ip: Dict[str, Dict[str, Any]] = {}
     for endpoint_type in endpoint_types.values():
@@ -285,18 +336,16 @@ async def build_network_overview(
             endpoint_data = None
 
         configured_services_by_port: Dict[int, Dict[str, Any]] = {}
+        services_without_port: List[Dict[str, Any]] = []
         for service in configured_services:
             service_type = service_types.get(service["type_id"])
             if service_type is None:
                 continue
-            port_field = role_field_key(service_type["fields"], service_type["mapping"], "port")
-            port_value = resolved_value(service["service_data"], port_field)
-            if port_value is None:
-                continue
-            try:
-                configured_services_by_port[int(port_value)] = service
-            except (TypeError, ValueError):
-                continue
+            port_num = _port_number(service, service_type)
+            if port_num is None:
+                services_without_port.append(service)
+            else:
+                configured_services_by_port[port_num] = service
 
         mapped_ports: List[MappedPort] = []
         for port_str, port_status in host.ports.items():
@@ -390,6 +439,9 @@ async def build_network_overview(
                 browser_kind=service_type["browser_kind"] if service_type else None,
             ))
 
+        for service in services_without_port:
+            mapped_ports.append(_unknown_port(service, service_types[service["type_id"]], None))
+
         mapped_endpoints.append(MappedEndpoint(
             ip=ip_str,
             status=host.status,
@@ -433,6 +485,10 @@ async def build_network_overview(
         mapped_endpoints.append(await _build_last_known_endpoint(
             ip_str, configured_endpoint, service_types, service_repo, previous_host_statuses, previous_port_statuses, now,
         ))
+
+    # Endpoints without an `ip`-role value can't be probed; listed as "unknown", no history.
+    for endpoint in endpoints_without_ip:
+        mapped_endpoints.append(await _build_endpoint_without_ip(endpoint, service_types, service_repo))
 
     await host_status_repo.set_host_statuses(device, new_host_statuses)
     await host_status_repo.set_port_statuses(device, new_port_statuses)
