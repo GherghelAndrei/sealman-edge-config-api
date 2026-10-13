@@ -16,7 +16,6 @@ from routers.service.schemas import (
     ServiceTypeCreate,
     ServiceTypeUpdate,
     ServiceUpdate,
-    PORT_FIELD_KEY,
 )
 
 services = APIRouter()
@@ -83,11 +82,13 @@ async def create_service_type(
             description=body.description,
             fields={k: v.model_dump(exclude_none=True) for k, v in body.fields.items()},
             browser_kind=body.browser_kind,
+            mapping=body.mapping,
         )
-        # A new type's default port (if any) is also always scanned on every device at minimum,
-        # same as every pre-existing type's default port already is - see
-        # get_network_scan_ports.py and default_scan_ports.py's seed migration.
-        port_field = body.fields.get(PORT_FIELD_KEY)
+        # The default value of the type's `port`-role field (if any) is also always scanned on
+        # every device at minimum - see get_network_scan_ports.py and default_scan_ports.py's
+        # seed migration. The role decides, not the key name.
+        port_key = next((key for key, role in body.mapping.items() if role == "port"), None)
+        port_field = body.fields.get(port_key) if port_key is not None else None
         if port_field is not None and port_field.default is not None:
             try:
                 await scan_ports_repo.add_default_port(int(port_field.default))
@@ -139,6 +140,7 @@ async def update_service_type(
             description=body.description,
             fields=field_patch,
             browser_kind=body.browser_kind,
+            mapping=body.mapping,
         )
     except APIError as exc:
         _handle_api_error(exc)
