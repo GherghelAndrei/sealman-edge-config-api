@@ -74,3 +74,35 @@ class TestEndpointRetype:
         int_serial_type = await _type(client, {"serial": {"type": "integer", "label": "Serial"}})
         response = await client.patch(f"/endpoints/{endpoint_id}", json={"type_id": int_serial_type})
         assert response.status_code == 422, response.text
+
+
+class TestRetypeIgnoresChangeable:
+    async def test_retype_onto_type_with_non_changeable_field_succeeds(self, client, db_session):
+        # `changeable: false` is not enforced on retype (decision Q3).
+        _, _, endpoint_id = await _setup(client, db_session)
+        locked_type = await _type(
+            client, {"serial": {**STRING_FIELD, "changeable": False}}
+        )
+        response = await client.patch(f"/endpoints/{endpoint_id}", json={"type_id": locked_type})
+        assert response.status_code == 200, response.text
+        assert response.json()["type_id"] == locked_type
+        assert response.json()["endpoint_data"]["serial"]["value"] == "S-1"
+
+
+class TestRawDataNotExposed:
+    async def test_get_endpoint_and_service_do_not_contain_raw_data(self, client, db_session):
+        _, _, endpoint_id = await _setup(client, db_session)
+        service_type = (
+            await client.post("/service-types", json={"label": _label(), "fields": {"proto": STRING_FIELD}})
+        ).json()["type_id"]
+        service = await client.post(
+            f"/services?endpoint_id={endpoint_id}",
+            json={"type_id": service_type, "service_data": {"proto": "x"}},
+        )
+        assert service.status_code == 201, service.text
+        service_id = service.json()["service_id"]
+
+        endpoint_json = (await client.get(f"/endpoints/{endpoint_id}")).text
+        service_json = (await client.get(f"/services/{service_id}")).text
+        assert "raw_endpoint_data" not in endpoint_json
+        assert "raw_service_data" not in service_json

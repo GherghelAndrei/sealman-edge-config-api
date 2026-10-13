@@ -120,3 +120,25 @@ class TestServiceTypeBrowserKind:
         )
         assert response.status_code == 200, response.text
         assert response.json()["browser_kind"] == "ftp"
+
+
+class TestServiceTypeRoleOnFieldRemoval:
+    async def test_patch_mapping_referencing_field_removed_in_same_request_is_422(self, client):
+        created = await _create(client, fields={"p": INT_FIELD}, mapping={"p": "port"})
+        url = f"/service-types/{created['type_id']}"
+        response = await client.patch(url, json={"fields": {"p": None}, "mapping": {"p": "port"}})
+        assert response.status_code == 422, response.text
+        unchanged = (await client.get(url)).json()
+        assert unchanged["fields"].keys() == {"p"}
+        assert unchanged["mapping"] == {"p": "port"}
+
+    async def test_fields_only_patch_drops_only_removed_fields_role(self, client):
+        created = await _create(
+            client, fields={"p": INT_FIELD, "q": INT_FIELD}, mapping={"p": "port"}
+        )
+        response = await client.patch(
+            f"/service-types/{created['type_id']}", json={"fields": {"p": None}}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["fields"].keys() == {"q"}
+        assert response.json()["mapping"] == {}
