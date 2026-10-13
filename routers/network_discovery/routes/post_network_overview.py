@@ -276,6 +276,9 @@ async def build_network_overview(
             configured_endpoints_by_ip.setdefault(str(ip_value), []).append(endpoint)
         else:
             endpoints_without_ip.append(endpoint)
+    # Endpoints sharing an IP: a stable order decides which one carries the host's unclaimed ports.
+    for ip_endpoints in configured_endpoints_by_ip.values():
+        ip_endpoints.sort(key=lambda e: (e["created_at"], e["endpoint_id"]))
 
     default_endpoint_types_by_ip: Dict[str, Dict[str, Any]] = {}
     for endpoint_type in endpoint_types.values():
