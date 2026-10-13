@@ -85,6 +85,10 @@ class TestServiceTypePermissions(_NonAdmin):
         assert (await client.get("/service-types")).status_code == 200
         assert (await client.get(f"/service-types/{type_id}")).status_code == 200
 
+    async def test_platform_config_write_alone_cannot_list(self, client, db_session):
+        await _grant(db_session, "platform.config.write")
+        assert (await client.get("/service-types")).status_code == 403
+
 
 class TestDeviceTypePermissions(_NonAdmin):
     async def test_without_platform_config_read_cannot_list_or_get(self, client, db_session):

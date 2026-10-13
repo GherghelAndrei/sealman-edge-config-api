@@ -26,12 +26,12 @@ class TestServiceRoutesDeviceScope:
             "roles": [],
         }
 
-    async def _world(self, db_session, actions):
+    async def _world(self, db_session, actions, scoped=True):
         await AbacFixtures(db_session).setup(
             users={"tester": USER_OID},
             scopes={"eu": {"attr": {"region": "EU"}, "access_rule": "ALL"}},
             roles={"r": actions},
-            teams={"team": {"scope": "eu", "roles": ["r"], "users": ["tester"]}},
+            teams={"team": {"scope": "eu" if scoped else None, "roles": ["r"], "users": ["tester"]}},
             devices={"eu-dev": {"region": "EU"}, "us-dev": {"region": "US"}},
         )
         endpoint_type = await seed_endpoint_type(db_session)
@@ -53,6 +53,13 @@ class TestServiceRoutesDeviceScope:
         assert [s["service_id"] for s in in_scope.json()] == [w["eu_service"]]
         assert (await client.get(f"/services?endpoint_id={w['us_endpoint']}")).status_code == 403
         assert (await client.get("/services?endpoint_id=does-not-exist")).status_code == 404
+
+    async def test_unscoped_team_lists_services_of_every_device(self, client, db_session):
+        w = await self._world(db_session, READ, scoped=False)
+        for endpoint_key, service_key in (("eu_endpoint", "eu_service"), ("us_endpoint", "us_service")):
+            response = await client.get(f"/services?endpoint_id={w[endpoint_key]}")
+            assert response.status_code == 200, response.text
+            assert [s["service_id"] for s in response.json()] == [w[service_key]]
 
     async def test_create_follows_the_endpoint_device(self, client, db_session):
         w = await self._world(db_session, WRITE)

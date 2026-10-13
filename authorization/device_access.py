@@ -37,6 +37,8 @@ async def require_device_permission(
     if user_data.get("is_admin"):
         return
 
+    # Mirrors ABACPermissionCheck's team/unscoped handling so the device lookup can be skipped
+    # (keep in sync).
     teams_with_permission = [
         team for team in user_data.get("teams", [])
         if any(permission in role.get("allowed_actions", []) for role in team.get("roles", []))
