@@ -228,3 +228,99 @@ class TestOverviewWithoutAddress:
         entry = next(e for e in response.json()["endpoints"] if e.get("endpoint_id") == endpoint_id)
         assert entry["status"] == "unknown"
         assert "ip" not in entry
+
+
+class TestDiscoveryUsesStoredValuesOnly:
+    """User decision I1: a type's field default is a scan suggestion only, never the live value."""
+
+    async def test_endpoint_without_stored_ip_ignores_type_default_ip(self, client, db_session):
+        await AbacFixtures(db_session).setup(devices={DEVICE: {}})
+        type_id = await _endpoint_type(
+            client,
+            {"addr": {**STRING_FIELD, "default": "10.30.0.10"}, "serial": STRING_FIELD},
+            {"addr": "ip"},
+        )
+        endpoint_id = await _endpoint(client, type_id, {"serial": "SN-1"})
+
+        entries = await _overview(client, _scan([_host("10.30.0.10")], [], network="10.30.0.0"))
+
+        configured = next(e for e in entries if e.get("endpoint_id") == endpoint_id)
+        assert configured["status"] == "unknown"
+        assert "ip" not in configured
+        suggestion = _by_ip(entries, "10.30.0.10")
+        assert suggestion["source"] == "default"
+        assert "endpoint_id" not in suggestion
+
+        last_known = (await client.get(f"/{DEVICE}/network/last-known")).json()["endpoints"]
+        known = next(e for e in last_known if e.get("endpoint_id") == endpoint_id)
+        assert known["status"] == "unknown"
+        assert "ip" not in known
+
+    async def test_two_endpoints_without_ip_on_type_with_default_are_both_listed(self, client, db_session):
+        await AbacFixtures(db_session).setup(devices={DEVICE: {}})
+        type_id = await _endpoint_type(
+            client,
+            {"addr": {**STRING_FIELD, "default": "10.30.0.11"}, "serial": STRING_FIELD},
+            {"addr": "ip"},
+        )
+        first = await _endpoint(client, type_id, {"serial": "SN-1"})
+        second = await _endpoint(client, type_id, {"serial": "SN-2"})
+
+        entries = await _overview(client, _scan([], [], network="10.30.0.0"))
+
+        for endpoint_id in (first, second):
+            entry = next(e for e in entries if e.get("endpoint_id") == endpoint_id)
+            assert entry["status"] == "unknown"
+            assert "ip" not in entry
+
+    async def test_endpoints_sharing_stored_ip_are_all_listed(self, client, db_session):
+        await AbacFixtures(db_session).setup(devices={DEVICE: {}})
+        type_id = await _endpoint_type(client, {"addr": STRING_FIELD}, {"addr": "ip"})
+        first = await _endpoint(client, type_id, {"addr": "10.30.0.20"})
+        second = await _endpoint(client, type_id, {"addr": "10.30.0.20"})
+
+        entries = await _overview(client, _scan([_host("10.30.0.20")], [], network="10.30.0.0"))
+
+        listed = {e["endpoint_id"]: e for e in entries if e.get("endpoint_id") in (first, second)}
+        assert set(listed) == {first, second}
+        assert all(e["status"] == "online" and e["ip"] == "10.30.0.20" for e in listed.values())
+
+        last_known = (await client.get(f"/{DEVICE}/network/last-known")).json()["endpoints"]
+        assert {e["endpoint_id"] for e in last_known} >= {first, second}
+
+    async def test_service_without_stored_port_ignores_type_default_port(self, client, db_session):
+        await AbacFixtures(db_session).setup(devices={DEVICE: {}})
+        endpoint_type = await _endpoint_type(client, {"addr": STRING_FIELD}, {"addr": "ip"})
+        service_type = await _service_type(
+            client, {"p": {**INT_FIELD, "default": 4840}, "label": STRING_FIELD}, {"p": "port"}
+        )
+        endpoint_id = await _endpoint(client, endpoint_type, {"addr": "10.30.0.30"})
+        service_id = await _service(client, endpoint_id, service_type, {"label": "x"})
+
+        entries = await _overview(
+            client, _scan([_host("10.30.0.30", {4840: "online"})], [4840], network="10.30.0.0")
+        )
+
+        ports = _by_ip(entries, "10.30.0.30")["ports"]
+        configured = next(p for p in ports if p.get("service_id") == service_id)
+        assert configured["status"] == "unknown"
+        assert "port" not in configured
+        suggestion = next(p for p in ports if p.get("port") == 4840)
+        assert suggestion["source"] == "default"
+        assert "service_id" not in suggestion
+
+    async def test_services_sharing_stored_port_are_all_listed(self, client, db_session):
+        await AbacFixtures(db_session).setup(devices={DEVICE: {}})
+        endpoint_type = await _endpoint_type(client, {"addr": STRING_FIELD}, {"addr": "ip"})
+        service_type = await _service_type(client, {"p": INT_FIELD}, {"p": "port"})
+        endpoint_id = await _endpoint(client, endpoint_type, {"addr": "10.30.0.40"})
+        first = await _service(client, endpoint_id, service_type, {"p": 4841})
+        second = await _service(client, endpoint_id, service_type, {"p": 4841})
+
+        entries = await _overview(
+            client, _scan([_host("10.30.0.40", {4841: "online"})], [4841], network="10.30.0.0")
+        )
+
+        ports = {p["service_id"]: p for p in _by_ip(entries, "10.30.0.40")["ports"] if p.get("service_id")}
+        assert set(ports) == {first, second}
+        assert all(p["status"] == "online" for p in ports.values())
