@@ -2,6 +2,8 @@ from typing import List, Never
 from fastapi import HTTPException, Depends, APIRouter
 from pydantic import ValidationError as PydanticValidationError
 from exceptions import APIError
+from authorization.abac_permission_check import ABACPermissionCheck
+from authorization.permission_types import Platform
 from db.repos.device_type import DeviceTypeRepository
 from db.session import get_repository
 from db.merge import patch_fields
@@ -13,6 +15,10 @@ from routers.device_type.schemas import (
 )
 
 device_types = APIRouter()
+
+# Device types are platform configuration (global, not device-scoped).
+_read = Depends(ABACPermissionCheck(Platform.CONFIG_READ, device_path=None))
+_write = Depends(ABACPermissionCheck(Platform.CONFIG_WRITE, device_path=None))
 
 
 def _handle_api_error(exc: APIError) -> Never:
@@ -26,7 +32,7 @@ def _handle_api_error(exc: APIError) -> Never:
     summary="List all device types",
 )
 async def list_device_types(
-    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),
+    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),    _auth=_read,
 ):
     results = await repo.get_device_types()
     return [DeviceTypeResponse.model_validate(r) for r in results]
@@ -40,7 +46,7 @@ async def list_device_types(
 )
 async def get_device_type(
     type_id: str,
-    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),
+    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),    _auth=_read,
 ) -> DeviceTypeResponse:
     result = await repo.get_device_type(type_id)
     if result is None:
@@ -59,7 +65,7 @@ async def get_device_type(
 )
 async def create_device_type(
     body: DeviceTypeCreate,
-    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),
+    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),    _auth=_write,
 ) -> DeviceTypeResponse:
     try:
         result = await repo.create_device_type(
@@ -81,7 +87,7 @@ async def create_device_type(
 async def update_device_type(
     type_id: str,
     body: DeviceTypeUpdate,
-    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),
+    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),    _auth=_write,
 ) -> DeviceTypeResponse:
     field_patch = (
         {
@@ -130,7 +136,7 @@ async def update_device_type(
 )
 async def delete_device_type(
     type_id: str,
-    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),
+    repo: DeviceTypeRepository = Depends(get_repository(DeviceTypeRepository)),    _auth=_write,
 ) -> None:
     try:
         await repo.delete_device_type(type_id)

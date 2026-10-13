@@ -29,7 +29,6 @@ class ServiceTypeUpdate(BaseModel):
     mapping: Optional[Dict[str, str]] = None
 
 
-
 class ServiceTypeResponse(BaseModel):
     type_id: str
     label: str

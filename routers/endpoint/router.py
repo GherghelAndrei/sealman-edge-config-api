@@ -3,7 +3,7 @@ from fastapi import HTTPException, Depends, Query, APIRouter
 from pydantic import ValidationError as PydanticValidationError
 from exceptions import APIError
 from authorization.abac_permission_check import ABACPermissionCheck
-from authorization.permission_types import Device
+from authorization.permission_types import Device, Platform
 from db.repos.endpoint import EndpointRepository
 from db.session import get_repository
 from db.merge import patch_fields
@@ -18,6 +18,12 @@ from routers.endpoint.schemas import (
 )
 
 endpoints = APIRouter()
+
+# Types are platform configuration: reading them stays at `device.endpoint.read` (not
+# device-scoped, so the Settings page and every device view can load them), writing them needs
+# `platform.config.write`.
+_type_read = Depends(ABACPermissionCheck(Device.ENDPOINT_READ, device_path=None))
+_type_write = Depends(ABACPermissionCheck(Platform.CONFIG_WRITE, device_path=None))
 
 # `device` is passed as a query param here (`device_id`), not a path param, so
 # `ABACPermissionCheck`'s default device-scope lookup (which only reads path params)
@@ -39,7 +45,7 @@ def _handle_api_error(exc: APIError) -> Never:
 )
 async def list_endpoint_types(
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_read,
+    _auth=_type_read,
 ):
     results = await repo.get_endpoint_types()
     return [EndpointTypeResponse.model_validate(r) for r in results]
@@ -54,7 +60,7 @@ async def list_endpoint_types(
 async def get_endpoint_type(
     type_id: str,
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_read,
+    _auth=_type_read,
 ) -> EndpointTypeResponse:
     result = await repo.get_endpoint_type(type_id)
     if result is None:
@@ -74,7 +80,7 @@ async def get_endpoint_type(
 async def create_endpoint_type(
     body: EndpointTypeCreate,
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_write,
+    _auth=_type_write,
 ) -> EndpointTypeResponse:
     try:
         result = await repo.create_endpoint_type(
@@ -98,7 +104,7 @@ async def update_endpoint_type(
     type_id: str,
     body: EndpointTypeUpdate,
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_write,
+    _auth=_type_write,
 ) -> EndpointTypeResponse:
     field_patch = (
         {
@@ -150,7 +156,7 @@ async def delete_endpoint_type(
     type_id: str,
     cascade: bool = False,
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_write,
+    _auth=_type_write,
 ) -> None:
     try:
         await repo.delete_endpoint_type(type_id, cascade=cascade)
