@@ -203,17 +203,18 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
             return None
 
         if type_id is not None and type_id != endpoint.type_id:
-            # Reassigning to a different type: the old endpoint_data was validated against a
-            # different field schema, so it isn't merged forward - the caller supplies fresh
-            # data for the new type (including a fresh "name"), validated the same way a
-            # newly-created endpoint would be.
+            # Retyping keeps all existing data: the patch is merged onto the stored endpoint_data
+            # (same rule as a normal update) and the result is validated against the new type.
+            # Keys the new type defines become its field values; the rest stay visible as Custom
+            # Fields (resolve_fields returns them with field=None). `changeable` isn't enforced
+            # on retype, as before.
             new_et = await self._get_endpoint_type_or_raise(type_id)
-            new_data = endpoint_data or {}
-            validate_instance_data(new_data, new_et.fields or {})
+            merged_data = patch_data(endpoint.endpoint_data or {}, endpoint_data or {})
+            validate_instance_data(merged_data, new_et.fields or {})
             await self._session.execute(
                 update(Endpoint)
                 .where(Endpoint.endpoint_id == endpoint_id)
-                .values(type_id=type_id, endpoint_data=new_data)
+                .values(type_id=type_id, endpoint_data=merged_data)
             )
         else:
             et = await self._get_endpoint_type_or_raise(endpoint.type_id)
