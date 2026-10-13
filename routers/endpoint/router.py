@@ -81,6 +81,7 @@ async def create_endpoint_type(
             label=body.label,
             description=body.description,
             fields={k: v.model_dump(exclude_none=True) for k, v in body.fields.items()},
+            mapping=body.mapping,
         )
         return EndpointTypeResponse.model_validate(result)
     except APIError as exc:
@@ -127,6 +128,7 @@ async def update_endpoint_type(
             label=body.label,
             description=body.description,
             fields=field_patch,
+            mapping=body.mapping,
         )
     except APIError as exc:
         _handle_api_error(exc)
