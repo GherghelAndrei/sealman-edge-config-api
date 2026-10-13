@@ -324,3 +324,57 @@ class TestDiscoveryUsesStoredValuesOnly:
         ports = {p["service_id"]: p for p in _by_ip(entries, "10.30.0.40")["ports"] if p.get("service_id")}
         assert set(ports) == {first, second}
         assert all(p["status"] == "online" for p in ports.values())
+
+
+class TestEndpointsSharingStoredIp:
+    async def _world(self, client, db_session):
+        await AbacFixtures(db_session).setup(devices={DEVICE: {}})
+        endpoint_type = await _endpoint_type(client, {"addr": STRING_FIELD}, {"addr": "ip"})
+        a = await _endpoint(client, endpoint_type, {"addr": "10.40.0.20"})
+        b = await _endpoint(client, endpoint_type, {"addr": "10.40.0.20"})
+        # Rows made in one test transaction can share a created_at, so "first" is decided by
+        # (created_at, endpoint_id), as in the route.
+        created = {i: (await client.get(f"/endpoints/{i}")).json()["created_at"] for i in (a, b)}
+        first, second = sorted((a, b), key=lambda i: (created[i], i))
+        return first, second
+
+    async def test_unclaimed_port_goes_to_first_endpoint_only(self, client, db_session):
+        first, second = await self._world(client, db_session)
+        service_type = await _service_type(client, {"p": INT_FIELD}, {"p": "port"})
+        service_on_second = await _service(client, second, service_type, {"p": 47010})
+
+        entries = await _overview(
+            client,
+            _scan(
+                [_host("10.40.0.20", {47010: "online", 47011: "online"})],
+                [47010, 47011],
+                network="10.40.0.0",
+            ),
+        )
+
+        by_id = {e["endpoint_id"]: e for e in entries if e.get("endpoint_id") in (first, second)}
+        assert set(by_id) == {first, second}
+        unclaimed = [
+            endpoint_id
+            for endpoint_id, e in by_id.items()
+            for p in e["ports"]
+            if p.get("port") == 47011
+        ]
+        assert unclaimed == [first]
+        # A port configured as a service on B is neither suggested nor listed on A.
+        assert all(p.get("port") != 47010 for p in by_id[first]["ports"])
+        assert [p["service_id"] for p in by_id[second]["ports"] if p.get("port") == 47010] == [service_on_second]
+
+    async def test_missing_in_range_marks_both_offline_and_last_known_agrees(self, client, db_session):
+        first, second = await self._world(client, db_session)
+
+        entries = await _overview(client, _scan([], [], network="10.40.0.0"))
+
+        by_id = {e["endpoint_id"]: e for e in entries if e.get("endpoint_id") in (first, second)}
+        assert set(by_id) == {first, second}
+        assert {e["status"] for e in by_id.values()} == {"offline"}
+
+        last_known = (await client.get(f"/{DEVICE}/network/last-known")).json()["endpoints"]
+        known = {e["endpoint_id"]: e for e in last_known if e.get("endpoint_id") in (first, second)}
+        assert set(known) == {first, second}
+        assert {e["status"] for e in known.values()} == {"offline"}
