@@ -3,7 +3,9 @@ from fastapi import HTTPException, Depends, Query, APIRouter
 from pydantic import ValidationError as PydanticValidationError
 from exceptions import APIError
 from authorization.abac_permission_check import ABACPermissionCheck
+from authorization.device_access import DeviceAccess, device_access
 from authorization.permission_types import Device, Platform
+from db.repos.device import DeviceRepository
 from db.repos.endpoint import EndpointRepository
 from db.session import get_repository
 from db.merge import patch_fields
@@ -25,12 +27,11 @@ endpoints = APIRouter()
 _type_read = Depends(ABACPermissionCheck(Device.ENDPOINT_READ, device_path=None))
 _type_write = Depends(ABACPermissionCheck(Platform.CONFIG_WRITE, device_path=None))
 
-# `device` is passed as a query param here (`device_id`), not a path param, so
-# `ABACPermissionCheck`'s default device-scope lookup (which only reads path params)
-# can't resolve it - `device_path=None` makes that explicit and skips per-device scope
-# filtering, falling back to a plain permission-grant check.
-_read = Depends(ABACPermissionCheck(Device.ENDPOINT_READ, device_path=None))
-_write = Depends(ABACPermissionCheck(Device.ENDPOINT_WRITE, device_path=None))
+# Endpoint routes are checked against the endpoint's device. The device comes from the
+# `device_id` query param or from the stored endpoint, so DeviceAccess.check() runs inside the
+# handler (see authorization/device_access.py).
+_read = Depends(device_access(Device.ENDPOINT_READ))
+_write = Depends(device_access(Device.ENDPOINT_WRITE))
 
 
 def _handle_api_error(exc: APIError) -> Never:
@@ -174,10 +175,21 @@ async def list_endpoints(
     device_id: str = Query(description="Device to list endpoints for"),
     type_id: Optional[str] = Query(default=None, description="Filter by endpoint type"),
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_read,
+    access: DeviceAccess = _read,
 ) -> List[EndpointResponse]:
+    await access.check(device_id)
     results = await repo.get_endpoints(device_id=device_id, type_id=type_id)
     return [EndpointResponse.model_validate(r) for r in results]
+
+
+async def _get_endpoint_checked(
+    endpoint_id: str, repo: EndpointRepository, access: DeviceAccess
+) -> dict:
+    endpoint = await repo.get_endpoint(endpoint_id=endpoint_id)
+    if endpoint is None:
+        raise HTTPException(status_code=404, detail=f"Endpoint '{endpoint_id}' not found")
+    await access.check(endpoint["device_id"])
+    return endpoint
 
 
 @endpoints.get(
@@ -189,14 +201,9 @@ async def list_endpoints(
 async def get_endpoint(
     endpoint_id: str,
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_read,
+    access: DeviceAccess = _read,
 ) -> EndpointResponse:
-    result = await repo.get_endpoint(endpoint_id=endpoint_id)
-    if result is None:
-        raise HTTPException(
-            status_code=404, detail=f"Endpoint '{endpoint_id}' not found"
-        )
-    return EndpointResponse.model_validate(result)
+    return EndpointResponse.model_validate(await _get_endpoint_checked(endpoint_id, repo, access))
 
 
 @endpoints.post(
@@ -210,8 +217,14 @@ async def create_endpoint(
     body: EndpointCreate,
     device_id: str = Query(description="Device to create the endpoint on"),
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_write,
+    device_repo: DeviceRepository = Depends(get_repository(DeviceRepository)),
+    access: DeviceAccess = _write,
 ) -> EndpointResponse:
+    await access.check(device_id)
+    # Admins and unscoped users pass the check for any device id, so a missing device must be
+    # caught here; otherwise the insert fails on the foreign key and returns 500.
+    if await device_repo.get_device_meta_raw(device_id) is None:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
     try:
         result = await repo.create_endpoint(
             device_id=device_id,
@@ -233,8 +246,9 @@ async def update_endpoint(
     endpoint_id: str,
     body: EndpointUpdate,
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_write,
+    access: DeviceAccess = _write,
 ) -> EndpointResponse:
+    await _get_endpoint_checked(endpoint_id, repo, access)
     try:
         result = await repo.update_endpoint(
             endpoint_id=endpoint_id,
@@ -261,6 +275,7 @@ async def update_endpoint(
 async def delete_endpoint(
     endpoint_id: str,
     repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
-    _auth=_write,
+    access: DeviceAccess = _write,
 ) -> None:
+    await _get_endpoint_checked(endpoint_id, repo, access)
     await repo.delete_endpoint(endpoint_id=endpoint_id)
