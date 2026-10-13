@@ -92,3 +92,31 @@ class TestServiceTypeRoleValidation:
             f"/service-types/{created['type_id']}", json={"mapping": {"p": "port"}}
         )
         assert response.status_code == 422, response.text
+
+
+class TestServiceTypeBrowserKind:
+    async def test_patch_without_browser_kind_keeps_it(self, client):
+        created = await _create(client, browser_kind="http")
+        url = f"/service-types/{created['type_id']}"
+        for body in ({"label": _label()}, {"mapping": {}}):
+            response = await client.patch(url, json=body)
+            assert response.status_code == 200, response.text
+            assert response.json()["browser_kind"] == "http"
+        assert (await client.get(url)).json()["browser_kind"] == "http"
+
+    async def test_patch_with_null_browser_kind_clears_it(self, client):
+        created = await _create(client, browser_kind="http")
+        response = await client.patch(
+            f"/service-types/{created['type_id']}", json={"browser_kind": None}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["browser_kind"] is None
+
+    async def test_patch_with_browser_kind_sets_it(self, client):
+        created = await _create(client)
+        assert created["browser_kind"] is None
+        response = await client.patch(
+            f"/service-types/{created['type_id']}", json={"browser_kind": "ftp"}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["browser_kind"] == "ftp"

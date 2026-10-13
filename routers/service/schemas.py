@@ -21,8 +21,8 @@ class ServiceTypeUpdate(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     fields: Optional[Dict[str, Union[FieldDefinitionUpdate, None]]] = None
-    # Unlike the other fields here, this is always applied as given (None clears it back to "no
-    # browse action") rather than "None means leave unchanged" - there's no other way to clear it.
+    # Omitted leaves it unchanged; an explicit null clears it back to "no browse action"
+    # (the router tells them apart with model_fields_set).
     browser_kind: Optional[BrowserKind] = None
     # Replaces the whole mapping when sent. When omitted, the stored roles stay, except those
     # whose field `fields` removes.

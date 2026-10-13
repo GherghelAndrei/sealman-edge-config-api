@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional, Union, cast
 
 from sqlalchemy import select, update, delete
 from sqlalchemy.exc import IntegrityError
@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.service import Service, ServiceType
 from db.registry import register_repository
-from db.repos.service import ServiceRepository
+from db.repos.service import UNSET, ServiceRepository, _Unset
 from db.merge import BlueprintResolver, patch_data, patch_fields, validate_instance_data
 from db.type_roles import SERVICE_ROLE_TYPES, drop_roles_of_missing_fields, validate_type_mapping
 from exceptions import APIError
@@ -96,7 +96,7 @@ class SqlAlchemyServiceRepository(BlueprintResolver, ServiceRepository):
         label: Optional[str] = None,
         description: Optional[str] = None,
         fields: Optional[Dict[str, Any]] = None,
-        browser_kind: Optional[str] = None,
+        browser_kind: Union[str, None, _Unset] = UNSET,
         mapping: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         st = await self._get_service_type_or_raise(type_id)
@@ -121,9 +121,9 @@ class SqlAlchemyServiceRepository(BlueprintResolver, ServiceRepository):
             if fields is not None:
                 values["fields"] = merged_fields
             values["mapping"] = new_mapping
-        # Always applied (even when None, to clear it back to "no browse action") - unlike the
-        # fields above, there's no separate signal for "leave this unchanged" here.
-        values["browser_kind"] = browser_kind
+        # None clears it back to "no browse action"; UNSET (not sent) leaves it unchanged.
+        if not isinstance(browser_kind, _Unset):
+            values["browser_kind"] = browser_kind
         if values:
             try:
                 await self._session.execute(

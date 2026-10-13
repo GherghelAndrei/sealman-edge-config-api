@@ -6,7 +6,7 @@ from authorization.abac_permission_check import ABACPermissionCheck
 from authorization.device_access import DeviceAccess, device_access
 from authorization.permission_types import Device, Platform
 from db.repos.endpoint import EndpointRepository
-from db.repos.service import ServiceRepository
+from db.repos.service import UNSET, ServiceRepository
 from db.repos.scan_ports import ScanPortsRepository
 from db.session import get_repository
 from db.merge import patch_fields
@@ -167,7 +167,8 @@ async def update_service_type(
             label=body.label,
             description=body.description,
             fields=field_patch,
-            browser_kind=body.browser_kind,
+            # Omitted keeps the stored value; an explicit null clears it.
+            browser_kind=body.browser_kind if "browser_kind" in body.model_fields_set else UNSET,
             mapping=body.mapping,
         )
     except APIError as exc:
