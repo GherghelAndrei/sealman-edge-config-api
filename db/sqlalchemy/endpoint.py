@@ -12,6 +12,7 @@ from db.merge import (
     reject_non_changeable_updates,
     validate_instance_data,
 )
+from db.transaction import commit_session
 from db.type_roles import ENDPOINT_ROLE_TYPES, drop_roles_of_missing_fields, validate_type_mapping
 from exceptions import APIError
 
@@ -138,6 +139,38 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
                 raise APIError(f"EndpointType label '{label}' already exists", 409)
             await self._session.refresh(et)
         return self._serialize_type(et)
+
+    async def apply_managed_fields(
+        self,
+        extension: str,
+        type_ids: List[str],
+        definitions: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, List[Dict[str, str]]]:
+        unique_ids = list(dict.fromkeys(type_ids))
+        # Check every id before writing, so an unknown one leaves all types unchanged.
+        types = [await self._get_endpoint_type_or_raise(type_id) for type_id in unique_ids]
+
+        applied: List[Dict[str, str]] = []
+        skipped: List[Dict[str, str]] = []
+        for et in types:
+            # New dicts: the stored JSONB values are never mutated in place.
+            new_fields = dict(et.fields or {})
+            new_managed_by = dict(et.managed_by or {})
+            for key, definition in definitions.items():
+                if key in new_fields:
+                    skipped.append({"type_id": et.type_id, "key": key, "reason": "key_exists"})
+                    continue
+                new_fields[key] = dict(definition)
+                new_managed_by[key] = extension
+                applied.append({"type_id": et.type_id, "key": key})
+            if new_managed_by != (et.managed_by or {}):
+                await self._session.execute(
+                    update(EndpointType)
+                    .where(EndpointType.type_id == et.type_id)
+                    .values(fields=new_fields, managed_by=new_managed_by)
+                )
+        await commit_session(self._session)
+        return {"applied": applied, "skipped": skipped}
 
     async def delete_endpoint_type(self, type_id: str, cascade: bool = False) -> None:
         await self._get_endpoint_type_or_raise(type_id)

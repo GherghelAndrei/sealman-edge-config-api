@@ -30,6 +30,21 @@ class EndpointRepository(ABC):
     ) -> Optional[Dict[str, Any]]: ...
 
     @abstractmethod
+    async def apply_managed_fields(
+        self,
+        extension: str,
+        type_ids: List[str],
+        definitions: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, List[Dict[str, str]]]:
+        """Copies each definition onto each type and marks it managed by `extension`.
+
+        Raises APIError(404) for the first unknown type id before writing anything.
+        Duplicate type ids are ignored. A key the type already has is skipped with
+        reason "key_exists". Returns {"applied": [{type_id, key}], "skipped": [{type_id, key, reason}]}.
+        """
+        ...
+
+    @abstractmethod
     async def delete_endpoint_type(self, type_id: str, cascade: bool = False) -> None:
         """Deletes the type. If `cascade` is False and endpoints of this type still exist,
         raises APIError(409). If `cascade` is True, deletes those endpoints (and, via FK

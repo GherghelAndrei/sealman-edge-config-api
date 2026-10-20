@@ -81,3 +81,32 @@ async def list_extension_field_sets(
             {"extension": name, "enabled": bool(row["enabled"]), "fields": declared, "applied": applied}
         )
     return field_sets
+
+
+async def apply_extension_fields(
+    extension_repo: ExtensionRepository,
+    endpoint_repo: EndpointRepository,
+    extension: str,
+    type_ids: List[str],
+    keys: List[str],
+) -> Dict[str, List[Dict[str, str]]]:
+    """Applies `keys` of `extension`'s declared fields to the endpoint types `type_ids`.
+
+    Errors, in this order: 422 empty lists, 404 unknown extension, 409 disabled
+    extension, 404 undeclared key, 404 unknown type (raised by the repository before
+    anything is written). Nothing is written to endpoints.
+    """
+    if not type_ids or not keys:
+        raise APIError("type_ids and keys must not be empty", 422)
+    row = await extension_repo.get_extension_row(extension)
+    if row is None:
+        raise APIError(f"Extension '{extension}' not found", 404)
+    if not row["enabled"]:
+        raise APIError(f"Extension '{extension}' is disabled; enable it to apply its fields", 409)
+    declared = row.get("endpoint_fields") or {}
+    definitions: Dict[str, Dict[str, Any]] = {}
+    for key in keys:
+        if key not in declared:
+            raise APIError(f"Extension '{extension}' declares no endpoint field '{key}'", 404)
+        definitions.setdefault(key, declared[key])
+    return await endpoint_repo.apply_managed_fields(extension, type_ids, definitions)
