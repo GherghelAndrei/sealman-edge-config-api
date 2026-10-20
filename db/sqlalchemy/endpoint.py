@@ -127,7 +127,11 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
             )
             for key, definition in (add_fields or {}).items():
                 merged_fields[key] = copy.deepcopy(definition)
-            new_managed_by = {**(et.managed_by or {}), **(add_managed_by or {})}
+            # A removed field takes its marker with it: it is no longer managed (D13).
+            new_managed_by = {
+                **drop_roles_of_missing_fields(et.managed_by or {}, merged_fields),
+                **(add_managed_by or {}),
+            }
             # A sent mapping replaces the stored one as a whole. Otherwise the stored roles stay,
             # except those whose field this patch removed.
             new_mapping = (
@@ -139,7 +143,7 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
             reject_roles_on_managed_fields(new_mapping, new_managed_by)
             if fields is not None or add_fields:
                 values["fields"] = merged_fields
-            if add_managed_by:
+            if new_managed_by != (et.managed_by or {}):
                 values["managed_by"] = new_managed_by
             values["mapping"] = new_mapping
         if values:

@@ -388,3 +388,286 @@ class TestExtensionFieldsOnTypesPermissions:
         assert patched.status_code == 403, patched.text
         et = await _endpoint_repo(db_session).get_endpoint_type(type_id)
         assert et["managed_by"] == {}
+
+
+class TestEmptyExtensionKeyList:
+    """D31: an extension listed with no keys is a client bug and is rejected."""
+
+    async def test_create_with_empty_key_list_is_422(self, client, db_session):
+        name = await seed_extension(db_session, {"serial_number": STRING_FIELD})
+        label = _label()
+        response = await client.post(
+            "/endpoint-types", json={"label": label, "extension_fields": {name: []}}
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["message"] == f"extension_fields for '{name}' lists no keys"
+        assert label not in await _labels(client)
+
+    async def test_patch_with_empty_key_list_is_422(self, client, db_session):
+        name = await seed_extension(db_session, {"serial_number": STRING_FIELD})
+        type_id = await seed_endpoint_type(db_session)
+        before = (await client.get(f"/endpoint-types/{type_id}")).json()
+
+        response = await client.patch(
+            f"/endpoint-types/{type_id}",
+            json={"label": _label(), "extension_fields": {name: []}},
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["message"] == f"extension_fields for '{name}' lists no keys"
+        assert (await client.get(f"/endpoint-types/{type_id}")).json() == before
+
+    async def test_empty_extension_fields_object_is_allowed(self, client):
+        created = await client.post(
+            "/endpoint-types", json={"label": _label(), "extension_fields": {}}
+        )
+        assert created.status_code == 201, created.text
+
+        patched = await client.patch(
+            f"/endpoint-types/{created.json()['type_id']}", json={"extension_fields": {}}
+        )
+        assert patched.status_code == 200, patched.text
+
+
+# --- the lock on managed fields and removal (D9, D13, D23) -----------------------------------
+
+LOCK_MESSAGE = (
+    "'serial_number' is managed by extension '{}'; "
+    "only label, description and show_in_list can change"
+)
+PATTERN_FIELD = {"type": "string", "label": "Serial number", "validation": {"pattern": "^SN"}}
+LOCK_DEVICE = "managed-lock-dev"
+
+
+async def _managed_type(client, db_session, field=None, extra_fields=None):
+    """A type created via POST with the extension's `serial_number` applied. -> (ext, type_id)"""
+    name = await seed_extension(db_session, {"serial_number": field or STRING_FIELD})
+    created = await client.post(
+        "/endpoint-types",
+        json={
+            "label": _label(),
+            "fields": extra_fields or {},
+            "extension_fields": {name: ["serial_number"]},
+        },
+    )
+    assert created.status_code == 201, created.text
+    return name, created.json()["type_id"]
+
+
+async def _endpoint_with_serial(client, db_session, type_id) -> str:
+    await AbacFixtures(db_session).setup(devices={LOCK_DEVICE: {}})
+    created = await client.post(
+        f"/endpoints?device_id={LOCK_DEVICE}",
+        json={"type_id": type_id, "endpoint_data": {"serial_number": "SN-1"}},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["endpoint_id"]
+
+
+class TestManagedFieldLock:
+    async def test_patch_label_description_show_in_list_ok(self, client, db_session):
+        name, type_id = await _managed_type(client, db_session)
+
+        response = await client.patch(
+            f"/endpoint-types/{type_id}",
+            json={
+                "fields": {
+                    "serial_number": {
+                        "label": "Machine serial",
+                        "description": "Printed on the plate",
+                        "show_in_list": False,
+                    }
+                }
+            },
+        )
+        assert response.status_code == 200, response.text
+        field = response.json()["fields"]["serial_number"]
+        assert field["label"] == "Machine serial"
+        assert field["description"] == "Printed on the plate"
+        assert field["show_in_list"] is False
+        assert response.json()["managed_by"] == {"serial_number": name}
+
+    async def test_patch_with_unchanged_full_definition_and_new_label_is_ok(
+        self, client, db_session
+    ):
+        name, type_id = await _managed_type(client, db_session, field=PATTERN_FIELD)
+        current = (await client.get(f"/endpoint-types/{type_id}")).json()
+        # The app sends back the GET's whole definition, nulls included.
+        definition = {**current["fields"]["serial_number"], "label": "Renamed"}
+        assert definition["validation"]["min_length"] is None
+
+        response = await client.patch(
+            f"/endpoint-types/{type_id}",
+            json={"label": current["label"], "fields": {"serial_number": definition}},
+        )
+        assert response.status_code == 200, response.text
+        field = response.json()["fields"]["serial_number"]
+        assert field["label"] == "Renamed"
+        assert field["validation"]["pattern"] == "^SN"
+        assert response.json()["managed_by"] == {"serial_number": name}
+
+    async def test_patch_locked_attribute_is_422(self, client, db_session):
+        name, type_id = await _managed_type(client, db_session)
+        before = (await client.get(f"/endpoint-types/{type_id}")).json()
+
+        for change in ({"ui": "textarea"}, {"required": True}, {"type": "integer"}):
+            response = await client.patch(
+                f"/endpoint-types/{type_id}",
+                json={"label": _label(), "fields": {"serial_number": change}},
+            )
+            assert response.status_code == 422, (change, response.text)
+            assert response.json()["message"] == LOCK_MESSAGE.format(name)
+        assert (await client.get(f"/endpoint-types/{type_id}")).json() == before
+
+    async def test_unmanaged_field_edits_are_not_locked(self, client, db_session):
+        _, type_id = await _managed_type(client, db_session, extra_fields={"note": NOTE_FIELD})
+
+        response = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"note": {"ui": "textarea"}}}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["fields"]["note"]["ui"] == "textarea"
+
+    async def test_role_via_mapping_on_managed_field_is_422(self, client, db_session):
+        name, type_id = await _managed_type(client, db_session)
+
+        response = await client.patch(
+            f"/endpoint-types/{type_id}", json={"mapping": {"serial_number": "name"}}
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["message"] == ROLE_MESSAGE.format(name)
+
+    async def test_removed_field_can_get_a_role_again(self, client, db_session):
+        _, type_id = await _managed_type(client, db_session)
+
+        removed = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"serial_number": None}}
+        )
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["managed_by"] == {}
+
+        # Now a normal admin field with the same key, given a role (D13 + D23).
+        readded = await client.patch(
+            f"/endpoint-types/{type_id}",
+            json={
+                "fields": {"serial_number": {"type": "string", "label": "Own serial"}},
+                "mapping": {"serial_number": "name"},
+            },
+        )
+        assert readded.status_code == 200, readded.text
+        assert readded.json()["mapping"] == {"serial_number": "name"}
+        assert readded.json()["managed_by"] == {}
+
+        # ...and as an admin field it is no longer locked.
+        edited = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"serial_number": {"ui": "textarea"}}}
+        )
+        assert edited.status_code == 200, edited.text
+
+    async def test_remove_keeps_other_markers(self, client, db_session):
+        name = await seed_extension(
+            db_session, {"serial_number": STRING_FIELD, "batch": STRING_FIELD}
+        )
+        created = await client.post(
+            "/endpoint-types",
+            json={"label": _label(), "extension_fields": {name: ["serial_number", "batch"]}},
+        )
+        assert created.status_code == 201, created.text
+
+        response = await client.patch(
+            f"/endpoint-types/{created.json()['type_id']}",
+            json={"fields": {"serial_number": None}},
+        )
+        assert response.status_code == 200, response.text
+        assert set(response.json()["fields"]) == {"batch"}
+        assert response.json()["managed_by"] == {"batch": name}
+
+    async def test_remove_keeps_values_as_custom_fields(self, client, db_session):
+        _, type_id = await _managed_type(client, db_session)
+        endpoint_id = await _endpoint_with_serial(client, db_session, type_id)
+
+        response = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"serial_number": None}}
+        )
+        assert response.status_code == 200, response.text
+        assert "serial_number" not in response.json()["fields"]
+        assert response.json()["managed_by"] == {}
+
+        endpoint = await client.get(f"/endpoints/{endpoint_id}")
+        assert endpoint.status_code == 200, endpoint.text
+        assert endpoint.json()["endpoint_data"]["serial_number"] == {"value": "SN-1", "field": None}
+
+    async def test_remove_then_reapply_restores_field_values(self, client, db_session):
+        name, type_id = await _managed_type(client, db_session)
+        endpoint_id = await _endpoint_with_serial(client, db_session, type_id)
+        removed = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"serial_number": None}}
+        )
+        assert removed.status_code == 200, removed.text
+
+        applied = await client.post(
+            f"/extension-fields/{name}/apply",
+            json={"type_ids": [type_id], "keys": ["serial_number"]},
+        )
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["applied"] == [{"type_id": type_id, "key": "serial_number"}]
+        assert applied.json()["skipped"] == []
+
+        endpoint = (await client.get(f"/endpoints/{endpoint_id}")).json()
+        assert endpoint["endpoint_data"]["serial_number"]["value"] == "SN-1"
+        assert endpoint["endpoint_data"]["serial_number"]["field"] is not None
+        et = (await client.get(f"/endpoint-types/{type_id}")).json()
+        assert et["managed_by"] == {"serial_number": name}
+
+
+LOCK_PERM_OID = "managed-field-edit-perm-oid"
+
+
+class TestManagedFieldEditPermissions:
+    @pytest.fixture
+    def fake_jwt_user(self):
+        return {
+            "oid": LOCK_PERM_OID,
+            "sub": LOCK_PERM_OID,
+            "preferred_username": "managed-field-edit-perm@test.com",
+            "name": "Managed Field Edit Perm",
+            "roles": [],
+        }
+
+    async def _managed_type_id(self, db_session) -> str:
+        name = await seed_extension(db_session, {"serial_number": STRING_FIELD})
+        created = await _endpoint_repo(db_session).create_endpoint_type(
+            label=_label(),
+            description=None,
+            fields={"serial_number": SERIAL_FIELD},
+            mapping={},
+            managed_by={"serial_number": name},
+        )
+        return created["type_id"]
+
+    async def _grant(self, db_session, *actions):
+        await AbacFixtures(db_session).setup(
+            users={"tester": LOCK_PERM_OID},
+            roles={"r": list(actions)},
+            teams={"t": {"roles": ["r"], "users": ["tester"]}},
+        )
+
+    async def test_platform_config_write_can_relabel(self, client, db_session):
+        await self._grant(db_session, "platform.config.write")
+        type_id = await self._managed_type_id(db_session)
+
+        response = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"serial_number": {"label": "Mine"}}}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["fields"]["serial_number"]["label"] == "Mine"
+
+    async def test_endpoint_write_cannot_relabel_or_remove(self, client, db_session):
+        await self._grant(db_session, "device.endpoint.write")
+        type_id = await self._managed_type_id(db_session)
+
+        for patch in ({"serial_number": {"label": "Mine"}}, {"serial_number": None}):
+            response = await client.patch(f"/endpoint-types/{type_id}", json={"fields": patch})
+            assert response.status_code == 403, response.text
+        et = await _endpoint_repo(db_session).get_endpoint_type(type_id)
+        assert et["fields"]["serial_number"]["label"] == "Serial"
+        assert et["managed_by"] != {}

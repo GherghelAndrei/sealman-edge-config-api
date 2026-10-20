@@ -104,13 +104,15 @@ async def resolve_extension_fields(
     """Resolves a type request's `extension_fields` ({extension: [key, ...]}).
 
     Returns (definitions_to_add, managed_by_to_add); the definitions are copies of the
-    stored manifest definitions. Errors per extension, in this order: 404 unknown
-    extension, 409 disabled extension, 404 undeclared key, then 422 for a key that is also
-    in the request's own `fields` (`own_keys`).
+    stored manifest definitions. Errors per extension, in this order: 422 no keys listed,
+    404 unknown extension, 409 disabled extension, 404 undeclared key, then 422 for a key
+    that is also in the request's own `fields` (`own_keys`).
     """
     definitions: Dict[str, Dict[str, Any]] = {}
     managed_by: Dict[str, str] = {}
     for extension, keys in extension_fields.items():
+        if not keys:
+            raise APIError(f"extension_fields for '{extension}' lists no keys", 422)
         declared = await _get_enabled_extension_fields(extension_repo, extension)
         for key in keys:
             if key not in declared:

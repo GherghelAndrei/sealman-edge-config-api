@@ -12,6 +12,7 @@ from db.session import get_repository
 from db.merge import patch_fields
 from extensions.endpoint_fields import resolve_extension_fields
 from routers.schemas import FieldDefinition
+from routers.endpoint.managed_field_lock import check_managed_field_patch
 from routers.endpoint.schemas import (
     EndpointTypeResponse,
     EndpointCreate,
@@ -136,6 +137,9 @@ async def update_endpoint_type(
         )
         if field_patch is not None:
             merged_fields = patch_fields(current["fields"], field_patch)
+            check_managed_field_patch(
+                current["fields"], merged_fields, current.get("managed_by") or {}
+            )
             for field_key, field_dict in merged_fields.items():
                 try:
                     FieldDefinition.model_validate(field_dict)
