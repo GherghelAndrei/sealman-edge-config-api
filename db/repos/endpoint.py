@@ -27,7 +27,13 @@ class EndpointRepository(ABC):
         description: Optional[str] = None,
         fields: Optional[Dict[str, Any]] = None,
         mapping: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]: ...
+        add_fields: Optional[Dict[str, Dict[str, Any]]] = None,
+        add_managed_by: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """`add_fields` are inserted after the `fields` patch and `add_managed_by` is merged into
+        the stored `managed_by`; a key of `add_fields` already in the stored fields raises
+        APIError(422). Everything is written in one statement."""
+        ...
 
     @abstractmethod
     async def apply_managed_fields(

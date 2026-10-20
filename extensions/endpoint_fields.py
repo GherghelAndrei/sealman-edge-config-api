@@ -5,7 +5,8 @@ Contributed fields are never required. Kept free of `extensions.registry` and
 `extensions.setup` imports so endpoint-type code can use it without a cycle.
 """
 
-from typing import Any, Dict, Iterable, List, Optional
+import copy
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -83,6 +84,45 @@ async def list_extension_field_sets(
     return field_sets
 
 
+async def _get_enabled_extension_fields(
+    extension_repo: ExtensionRepository, extension: str
+) -> Dict[str, Dict[str, Any]]:
+    """The stored declared fields of an enabled extension. 404 unknown, 409 disabled."""
+    row = await extension_repo.get_extension_row(extension)
+    if row is None:
+        raise APIError(f"Extension '{extension}' not found", 404)
+    if not row["enabled"]:
+        raise APIError(f"Extension '{extension}' is disabled; enable it to apply its fields", 409)
+    return row.get("endpoint_fields") or {}
+
+
+async def resolve_extension_fields(
+    extension_repo: ExtensionRepository,
+    extension_fields: Dict[str, List[str]],
+    own_keys: Set[str],
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+    """Resolves a type request's `extension_fields` ({extension: [key, ...]}).
+
+    Returns (definitions_to_add, managed_by_to_add); the definitions are copies of the
+    stored manifest definitions. Errors per extension, in this order: 404 unknown
+    extension, 409 disabled extension, 404 undeclared key, then 422 for a key that is also
+    in the request's own `fields` (`own_keys`).
+    """
+    definitions: Dict[str, Dict[str, Any]] = {}
+    managed_by: Dict[str, str] = {}
+    for extension, keys in extension_fields.items():
+        declared = await _get_enabled_extension_fields(extension_repo, extension)
+        for key in keys:
+            if key not in declared:
+                raise APIError(f"Extension '{extension}' declares no endpoint field '{key}'", 404)
+        for key in keys:
+            if key in own_keys:
+                raise APIError(f"'{key}' is in both fields and extension_fields", 422)
+            definitions[key] = copy.deepcopy(declared[key])
+            managed_by[key] = extension
+    return definitions, managed_by
+
+
 async def apply_extension_fields(
     extension_repo: ExtensionRepository,
     endpoint_repo: EndpointRepository,
@@ -98,12 +138,7 @@ async def apply_extension_fields(
     """
     if not type_ids or not keys:
         raise APIError("type_ids and keys must not be empty", 422)
-    row = await extension_repo.get_extension_row(extension)
-    if row is None:
-        raise APIError(f"Extension '{extension}' not found", 404)
-    if not row["enabled"]:
-        raise APIError(f"Extension '{extension}' is disabled; enable it to apply its fields", 409)
-    declared = row.get("endpoint_fields") or {}
+    declared = await _get_enabled_extension_fields(extension_repo, extension)
     definitions: Dict[str, Dict[str, Any]] = {}
     for key in keys:
         if key not in declared:

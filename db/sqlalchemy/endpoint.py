@@ -13,9 +13,10 @@ from db.merge import (
     reject_non_changeable_updates,
     validate_instance_data,
 )
+from db.managed_fields import reject_roles_on_managed_fields
 from db.transaction import commit_session
 from db.type_roles import ENDPOINT_ROLE_TYPES, drop_roles_of_missing_fields, validate_type_mapping
-from exceptions import APIError
+from exceptions import APIError, ValidationError
 
 
 @register_repository(EndpointRepository)
@@ -70,13 +71,15 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
         # ({field_key: role}) must point at fields of a fitting data type.
         type_fields = dict(fields or {})
         type_mapping = dict(mapping or {})
+        type_managed_by = dict(managed_by or {})
         validate_type_mapping(type_fields, type_mapping, ENDPOINT_ROLE_TYPES)
+        reject_roles_on_managed_fields(type_mapping, type_managed_by)
         et = EndpointType(
             label=label,
             description=description,
             fields=type_fields,
             mapping=type_mapping,
-            managed_by=dict(managed_by or {}),
+            managed_by=type_managed_by,
         )
         self._session.add(et)
         try:
@@ -104,6 +107,8 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
         description: Optional[str] = None,
         fields: Optional[Dict[str, Any]] = None,
         mapping: Optional[Dict[str, Any]] = None,
+        add_fields: Optional[Dict[str, Dict[str, Any]]] = None,
+        add_managed_by: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         et = await self._get_endpoint_type_or_raise(type_id)
         values: Dict[str, Any] = {}
@@ -112,10 +117,17 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
             values["label"] = label
         if description is not None:
             values["description"] = description
-        if fields is not None or mapping is not None:
+        for key in add_fields or {}:
+            if key in (et.fields or {}):
+                raise ValidationError(f"'{key}' already exists on this type", 422)
+        if fields is not None or mapping is not None or add_fields or add_managed_by:
+            # New dicts: the stored JSONB values are never mutated in place.
             merged_fields = (
                 patch_fields(et.fields or {}, fields) if fields is not None else dict(et.fields or {})
             )
+            for key, definition in (add_fields or {}).items():
+                merged_fields[key] = copy.deepcopy(definition)
+            new_managed_by = {**(et.managed_by or {}), **(add_managed_by or {})}
             # A sent mapping replaces the stored one as a whole. Otherwise the stored roles stay,
             # except those whose field this patch removed.
             new_mapping = (
@@ -124,8 +136,11 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
                 else drop_roles_of_missing_fields(et.mapping or {}, merged_fields)
             )
             validate_type_mapping(merged_fields, new_mapping, ENDPOINT_ROLE_TYPES)
-            if fields is not None:
+            reject_roles_on_managed_fields(new_mapping, new_managed_by)
+            if fields is not None or add_fields:
                 values["fields"] = merged_fields
+            if add_managed_by:
+                values["managed_by"] = new_managed_by
             values["mapping"] = new_mapping
         if values:
             try:
