@@ -1,3 +1,4 @@
+import copy
 from typing import Any, Dict, List, Optional
 from sqlalchemy import select, update, delete
 from sqlalchemy.exc import IntegrityError
@@ -160,7 +161,7 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
                 if key in new_fields:
                     skipped.append({"type_id": et.type_id, "key": key, "reason": "key_exists"})
                     continue
-                new_fields[key] = dict(definition)
+                new_fields[key] = copy.deepcopy(definition)
                 new_managed_by[key] = extension
                 applied.append({"type_id": et.type_id, "key": key})
             if new_managed_by != (et.managed_by or {}):

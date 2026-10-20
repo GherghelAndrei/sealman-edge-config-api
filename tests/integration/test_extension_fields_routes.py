@@ -1,6 +1,10 @@
 """`/extension-fields` routes: the fields extensions declare and the types they are applied to."""
 import pytest
 
+from db.registry import repo_registry
+from db.repos.extension import ExtensionRepository
+from routers.schemas import normalize_field_definition
+
 from tests.integration.endpoint_fixtures import (
     _endpoint_repo,
     seed_endpoint,
@@ -110,13 +114,28 @@ class TestExtensionFieldsReadPermissions:
         assert (await client.get("/extension-fields")).status_code == 403
 
 
+RICH_FIELD = normalize_field_definition(
+    {
+        "type": "string",
+        "label": "Serial number",
+        "description": "Printed on the rating plate",
+        "ui": "select",
+        "options": ["SN-A", "SN-B"],
+        "validation": {"max_length": 20},
+        "default": "SN-A",
+        "changeable": False,
+        "show_in_list": True,
+    }
+)
+
+
 def _apply_url(extension: str) -> str:
     return f"/extension-fields/{extension}/apply"
 
 
 class TestApplyExtensionFields:
     async def test_apply_copies_definition_and_marks_managed(self, client, db_session):
-        name = await seed_extension(db_session, {"serial_number": STRING_FIELD})
+        name = await seed_extension(db_session, {"serial_number": RICH_FIELD})
         type_id = await seed_endpoint_type(db_session)
 
         response = await client.post(
@@ -129,9 +148,14 @@ class TestApplyExtensionFields:
         }
 
         et = (await client.get(f"/endpoint-types/{type_id}")).json()
-        assert et["fields"]["serial_number"]["type"] == "string"
-        assert et["fields"]["serial_number"]["label"] == "Serial number"
         assert et["managed_by"] == {"serial_number": name}
+
+        # The stored copy equals the stored manifest definition, nested members included.
+        db_session.expire_all()
+        stored_row = await repo_registry.get(ExtensionRepository)(db_session).get_extension_row(name)
+        stored_type = await _endpoint_repo(db_session).get_endpoint_type(type_id)
+        assert stored_type["fields"]["serial_number"] == stored_row["endpoint_fields"]["serial_number"]
+        assert stored_type["fields"]["serial_number"] == RICH_FIELD
 
     async def test_apply_skips_existing_admin_key(self, client, db_session):
         name = await seed_extension(db_session, {"serial_number": STRING_FIELD})
