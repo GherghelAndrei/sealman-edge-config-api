@@ -28,6 +28,8 @@ class EndpointTypeResponse(BaseModel):
     description: Optional[str]
     fields: Dict[str, FieldDefinition]
     mapping: Dict[str, str]
+    # {field_key: extension name} for fields managed by an extension. Read-only.
+    managed_by: Dict[str, str] = {}
     created_at: datetime
     updated_at: datetime
 

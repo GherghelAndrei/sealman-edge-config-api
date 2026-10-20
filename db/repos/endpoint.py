@@ -16,6 +16,7 @@ class EndpointRepository(ABC):
         description: Optional[str],
         fields: Dict[str, Any],
         mapping: Optional[Dict[str, Any]] = None,
+        managed_by: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]: ...
 
     @abstractmethod

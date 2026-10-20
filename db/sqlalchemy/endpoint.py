@@ -24,6 +24,11 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    def _serialize_type(self, entity_type: Any) -> Dict[str, Any]:
+        result = super()._serialize_type(entity_type)
+        result["managed_by"] = entity_type.managed_by or {}
+        return result
+
     async def _get_endpoint_type_or_raise(self, type_id: str) -> EndpointType:
         result = await self._session.execute(
             select(EndpointType).where(EndpointType.type_id == type_id)
@@ -56,6 +61,7 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
         description: Optional[str],
         fields: Dict[str, Any],
         mapping: Optional[Dict[str, Any]] = None,
+        managed_by: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         await self._raise_if_label_taken(label)
         # Admins define every field; nothing is added or forced here. Roles in `mapping`
@@ -68,6 +74,7 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
             description=description,
             fields=type_fields,
             mapping=type_mapping,
+            managed_by=dict(managed_by or {}),
         )
         self._session.add(et)
         try:
