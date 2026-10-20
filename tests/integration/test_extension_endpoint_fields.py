@@ -419,3 +419,137 @@ class TestManifestUpdatePermissions:
         et = await _endpoint_repo(db_session).get_endpoint_type(type_id)
         assert et["managed_by"] == {"serial_number": name, "batch": name}
         assert et["fields"]["serial_number"] == STRING_FIELD
+
+
+UNINSTALL_DEVICE = "uninstall-dev"
+UNINSTALL_USER_OID = "uninstall-perm-oid"
+
+
+async def _apply_to_new_type(client, name, keys):
+    created = await client.post("/endpoint-types", json={"label": f"type2-{name}", "fields": {}})
+    assert created.status_code == 201, created.text
+    type_id = created.json()["type_id"]
+    applied = await client.post(f"/extension-fields/{name}/apply", json={"type_ids": [type_id], "keys": keys})
+    assert applied.status_code == 200, applied.text
+    assert len(applied.json()["applied"]) == len(keys)
+    return type_id
+
+
+class TestUninstall:
+    async def test_delete_removes_markers_on_all_types_and_keeps_fields_and_values(self, client, db_session):
+        from sqlalchemy import select
+
+        from db.models.endpoint import Endpoint
+        from tests.integration.endpoint_fixtures import seed_endpoint
+        from tests.integration.test_abac_authorization import AbacFixtures
+
+        name, first_id = await _registered_with_applied_type(client)
+        second_id = await _apply_to_new_type(client, name, ["serial_number"])
+        before = {type_id: await _get_type(client, type_id) for type_id in (first_id, second_id)}
+        await AbacFixtures(db_session).setup(devices={UNINSTALL_DEVICE: {}})
+        endpoint_id = await seed_endpoint(db_session, UNINSTALL_DEVICE, first_id, {"serial_number": "SN-1"})
+
+        response = await client.delete(f"/extensions/{name}")
+        assert response.status_code == 204, response.text
+
+        for type_id in (first_id, second_id):
+            after = await _get_type(client, type_id)
+            assert after["managed_by"] == {}
+            assert after["fields"] == before[type_id]["fields"]
+
+        stored = await db_session.scalar(select(Endpoint.endpoint_data).where(Endpoint.endpoint_id == endpoint_id))
+        assert stored == {"serial_number": "SN-1"}
+        endpoint = (await client.get(f"/endpoints/{endpoint_id}")).json()
+        assert endpoint["endpoint_data"]["serial_number"]["value"] == "SN-1"
+        assert endpoint["endpoint_data"]["serial_number"]["field"] is not None
+
+        role = await client.patch(f"/endpoint-types/{first_id}", json={"mapping": {"serial_number": "name"}})
+        assert role.status_code == 200, role.text
+
+    async def test_disable_keeps_markers(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+        before = await _get_type(client, type_id)
+
+        assert (await client.post(f"/extensions/{name}/disable")).status_code == 200
+
+        after = await _get_type(client, type_id)
+        assert after["managed_by"] == {"serial_number": name}
+        assert after == before
+
+    async def test_failing_delete_keeps_markers(self, client, monkeypatch):
+        from db.sqlalchemy.extension import SqlAlchemyExtensionRepository
+        from exceptions import APIError
+
+        name, type_id = await _registered_with_applied_type(client)
+        before = await _get_type(client, type_id)
+
+        async def _fail(self, *args, **kwargs):
+            raise APIError("simulated failure after markers were released", 500)
+
+        monkeypatch.setattr(SqlAlchemyExtensionRepository, "delete_orphaned_actions", _fail)
+        response = await client.delete(f"/extensions/{name}")
+        assert response.status_code == 500, response.text
+        monkeypatch.undo()
+
+        assert await _get_type(client, type_id) == before
+        assert (await client.get(f"/extensions/{name}")).status_code == 200
+
+
+class TestUninstallPermissions:
+    @pytest.fixture
+    def fake_jwt_user(self):
+        return {
+            "oid": UNINSTALL_USER_OID,
+            "sub": UNINSTALL_USER_OID,
+            "preferred_username": "uninstall-perm@test.com",
+            "name": "Uninstall Perm",
+            "roles": [],
+        }
+
+    async def _grant(self, db_session, *actions):
+        from tests.integration.test_abac_authorization import AbacFixtures
+
+        await AbacFixtures(db_session).setup(
+            users={"tester": UNINSTALL_USER_OID},
+            roles={"r": list(actions)},
+            teams={"t": {"roles": ["r"], "users": ["tester"]}},
+        )
+
+    async def _seed(self, db_session):
+        from tests.integration.endpoint_fixtures import _endpoint_repo, unique_label
+        from tests.integration.extension_fixtures import seed_extension
+
+        name = await seed_extension(db_session, {"serial_number": STRING_FIELD})
+        created = await _endpoint_repo(db_session).create_endpoint_type(
+            label=unique_label("et"),
+            description=None,
+            fields={"serial_number": STRING_FIELD},
+            mapping={},
+            managed_by={"serial_number": name},
+        )
+        return name, created["type_id"]
+
+    async def test_extension_deregister_alone_can_delete_and_markers_are_released(self, client, db_session):
+        from tests.integration.endpoint_fixtures import _endpoint_repo
+
+        await self._grant(db_session, "extension.deregister")
+        name, type_id = await self._seed(db_session)
+
+        response = await client.delete(f"/extensions/{name}")
+        assert response.status_code == 204, response.text
+
+        et = await _endpoint_repo(db_session).get_endpoint_type(type_id)
+        assert et["managed_by"] == {}
+        assert et["fields"]["serial_number"] == STRING_FIELD
+
+    async def test_platform_config_write_alone_cannot_delete(self, client, db_session):
+        from tests.integration.endpoint_fixtures import _endpoint_repo
+
+        await self._grant(db_session, "platform.config.write")
+        name, type_id = await self._seed(db_session)
+
+        response = await client.delete(f"/extensions/{name}")
+        assert response.status_code == 403, response.text
+
+        et = await _endpoint_repo(db_session).get_endpoint_type(type_id)
+        assert et["managed_by"] == {"serial_number": name}

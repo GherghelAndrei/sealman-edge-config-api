@@ -498,12 +498,15 @@ async def deregister_extension(
     extension_repo: ExtensionRepository,
     role_repo: RoleRepository,
     name: str,
+    endpoint_repo: EndpointRepository,
 ) -> None:
     """Removes the extension. Unlike PUT, DELETE *does* strip the extension's
     actions from every role that holds them, then deletes leftover Action rows.
     PUT is an in-place edit of a still-live catalog entry (don't silently revoke);
     DELETE is "this extension is gone" (the actions it introduced go with it).
-    All three steps commit together or not at all."""
+    Fields it applied to endpoint types stay as plain admin fields: only their
+    managed markers are released, and endpoint values are never touched.
+    All steps commit together or not at all."""
     existing = await extension_repo.get_extension_row(name)
     if existing is None:
         raise APIError(f"Extension '{name}' not found", 404)
@@ -511,6 +514,7 @@ async def deregister_extension(
     async with extension_repo.atomic():
         action_names = await extension_repo.list_extension_actions(name)
         await _strip_actions_from_all_roles(role_repo, action_names)
+        await endpoint_repo.release_managed_fields(name)
         await extension_repo.delete_extension(name)  # cascades upstreams/routes/actions
         await extension_repo.delete_orphaned_actions(action_names)
 

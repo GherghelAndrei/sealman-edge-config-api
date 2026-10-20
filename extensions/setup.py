@@ -176,9 +176,12 @@ def _build_management_router() -> BaseAPIRouter:
         name: str,
         extension_repo: ExtensionRepository = Depends(get_repository(ExtensionRepository)),
         role_repo: RoleRepository = Depends(get_repository(RoleRepository)),
+        # Shares extension_repo's session (get_db is cached per request), so releasing
+        # the type markers commits in the same transaction as the deletion.
+        endpoint_repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
     ) -> None:
         async with _extension_locks[name]:
-            await registry.deregister_extension(extension_repo, role_repo, name)
+            await registry.deregister_extension(extension_repo, role_repo, name, endpoint_repo)
             runtime.publish_routes(_public_app, internal_app, name, None)
 
     @router.post(
