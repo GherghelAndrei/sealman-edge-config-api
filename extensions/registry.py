@@ -26,6 +26,7 @@ from db.repos.role import RoleRepository
 from exceptions import APIError
 
 from . import body_validation, health, signature
+from .endpoint_fields import validate_endpoint_fields
 from .schemas import ExtensionHealthCheckResult, ExtensionRegistration, ExtensionDetail, RouteSpec, UpstreamSpec
 from .security import generate_key, hash_key
 from .upstreams import http as http_upstream
@@ -330,6 +331,7 @@ async def _build_detail(extension_repo: ExtensionRepository, name: str) -> Exten
         actions=actions,
         routes=routes,
         enabled=ext["enabled"],
+        endpoint_fields=ext.get("endpoint_fields") or {},
     )
 
 
@@ -345,6 +347,7 @@ async def register_extension(
     outside that transaction; it only logs a warning and must not undo a save.
     """
     _validate_manifest_cross_references(registration)
+    endpoint_fields = validate_endpoint_fields(registration.endpoint_fields)
     upstreams, routes = await _prepare_persistence(registration)
 
     try:
@@ -353,6 +356,7 @@ async def register_extension(
                 raise APIError(f"Extension '{registration.name}' is already registered", 409)
             await _validate_action_ownership(extension_repo, registration)
             await extension_repo.create_extension(registration.name, registration.description, registration.schema_version)
+            await extension_repo.set_endpoint_fields(registration.name, endpoint_fields or {})
             await _enroll_actions(extension_repo, registration)
             await extension_repo.replace_upstreams_and_routes(registration.name, upstreams, routes)
     except ExtensionActionConflictError as exc:
@@ -382,6 +386,7 @@ async def replace_extension(
         raise APIError(f"Extension '{name}' not found", 404)
 
     _validate_manifest_cross_references(registration)
+    endpoint_fields = validate_endpoint_fields(registration.endpoint_fields)
     old_actions = set(await extension_repo.list_extension_actions(name))
     new_actions = {action.name for action in registration.actions}
     for removed in old_actions - new_actions:
@@ -398,6 +403,9 @@ async def replace_extension(
             await _validate_action_ownership(extension_repo, registration, current_extension=name)
             await extension_repo.set_description(name, registration.description)
             await extension_repo.set_schema_version(name, registration.schema_version)
+            # An absent section leaves the stored fields unchanged (clients may drop it).
+            if endpoint_fields is not None:
+                await extension_repo.set_endpoint_fields(name, endpoint_fields)
             # A route's required_action FK depends on the action row already existing.
             await extension_repo.clear_extension_actions(name)
             await _enroll_actions(extension_repo, registration)
