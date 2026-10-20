@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from exceptions import APIError
-from extensions.endpoint_fields import validate_endpoint_fields
+from extensions.endpoint_fields import validate_endpoint_field_ownership, validate_endpoint_fields
 from extensions.registry import _build_detail
 
 
@@ -62,3 +62,34 @@ async def test_build_detail_defaults_endpoint_fields():
     detail = await _build_detail(extension_repo, "inventory")
 
     assert detail.endpoint_fields == {}
+
+
+@pytest.mark.asyncio
+async def test_ownership_conflict_names_owner():
+    extension_repo = AsyncMock()
+    extension_repo.list_extensions_rows.return_value = [
+        {"name": "other", "endpoint_fields": {"serial_number": {}}},
+    ]
+
+    with pytest.raises(APIError) as exc_info:
+        await validate_endpoint_field_ownership(extension_repo, "inventory", ["serial_number"])
+    assert exc_info.value.status_code == 409
+    assert str(exc_info.value) == "Endpoint field 'serial_number' is already declared by extension 'other'"
+
+
+@pytest.mark.asyncio
+async def test_own_keys_are_not_a_conflict():
+    extension_repo = AsyncMock()
+    extension_repo.list_extensions_rows.return_value = [
+        {"name": "inventory", "endpoint_fields": {"serial_number": {}}},
+    ]
+
+    await validate_endpoint_field_ownership(extension_repo, "inventory", ["serial_number"])
+
+
+@pytest.mark.asyncio
+async def test_row_without_endpoint_fields_is_not_a_conflict():
+    extension_repo = AsyncMock()
+    extension_repo.list_extensions_rows.return_value = [{"name": "other"}]
+
+    await validate_endpoint_field_ownership(extension_repo, "inventory", ["serial_number"])

@@ -26,7 +26,7 @@ from db.repos.role import RoleRepository
 from exceptions import APIError
 
 from . import body_validation, health, signature
-from .endpoint_fields import validate_endpoint_fields
+from .endpoint_fields import validate_endpoint_field_ownership, validate_endpoint_fields
 from .schemas import ExtensionHealthCheckResult, ExtensionRegistration, ExtensionDetail, RouteSpec, UpstreamSpec
 from .security import generate_key, hash_key
 from .upstreams import http as http_upstream
@@ -355,6 +355,7 @@ async def register_extension(
             if await extension_repo.extension_exists(registration.name):
                 raise APIError(f"Extension '{registration.name}' is already registered", 409)
             await _validate_action_ownership(extension_repo, registration)
+            await validate_endpoint_field_ownership(extension_repo, registration.name, (endpoint_fields or {}).keys())
             await extension_repo.create_extension(registration.name, registration.description, registration.schema_version)
             await extension_repo.set_endpoint_fields(registration.name, endpoint_fields or {})
             await _enroll_actions(extension_repo, registration)
@@ -401,6 +402,8 @@ async def replace_extension(
     try:
         async with extension_repo.atomic():
             await _validate_action_ownership(extension_repo, registration, current_extension=name)
+            if endpoint_fields is not None:
+                await validate_endpoint_field_ownership(extension_repo, name, endpoint_fields.keys())
             await extension_repo.set_description(name, registration.description)
             await extension_repo.set_schema_version(name, registration.schema_version)
             # An absent section leaves the stored fields unchanged (clients may drop it).

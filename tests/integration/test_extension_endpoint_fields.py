@@ -113,3 +113,46 @@ class TestManifestEndpointFields:
         response = await client.get("/extensions/schema")
         assert response.status_code == 200, response.text
         assert "endpoint_fields" in response.text
+
+
+class TestEndpointFieldOwnership:
+    async def test_register_key_owned_by_other_is_409(self, client):
+        owner = unique_extension_name()
+        other = unique_extension_name()
+        assert (await _register(client, owner, {"serial_number": STRING_FIELD})).status_code == 201
+
+        response = await _register(client, other, {"serial_number": STRING_FIELD})
+        assert response.status_code == 409, response.text
+        assert f"Endpoint field 'serial_number' is already declared by extension '{owner}'" in response.text
+
+        assert (await client.get(f"/extensions/{other}")).status_code == 404
+
+    async def test_put_key_owned_by_other_is_409(self, client):
+        owner = unique_extension_name()
+        other = unique_extension_name()
+        assert (await _register(client, owner, {"serial_number": STRING_FIELD})).status_code == 201
+        assert (await _register(client, other, {"asset_tag": STRING_FIELD})).status_code == 201
+
+        body = manifest(other, {"asset_tag": STRING_FIELD, "serial_number": STRING_FIELD})
+        response = await client.put(f"/extensions/{other}", json=body)
+        assert response.status_code == 409, response.text
+        assert f"Endpoint field 'serial_number' is already declared by extension '{owner}'" in response.text
+
+        detail = await client.get(f"/extensions/{other}")
+        assert list(detail.json()["endpoint_fields"]) == ["asset_tag"]
+
+    async def test_put_own_keys_is_not_a_conflict(self, client):
+        name = unique_extension_name()
+        assert (await _register(client, name, {"serial_number": STRING_FIELD})).status_code == 201
+
+        response = await client.put(f"/extensions/{name}", json=manifest(name, {"serial_number": STRING_FIELD}))
+        assert response.status_code == 200, response.text
+
+    async def test_key_free_again_after_owner_drops_it(self, client):
+        owner = unique_extension_name()
+        other = unique_extension_name()
+        assert (await _register(client, owner, {"serial_number": STRING_FIELD})).status_code == 201
+        assert (await client.put(f"/extensions/{owner}", json=manifest(owner, {}))).status_code == 200
+
+        response = await _register(client, other, {"serial_number": STRING_FIELD})
+        assert response.status_code == 201, response.text
