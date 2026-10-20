@@ -202,7 +202,7 @@ class ExtensionRegistration(ManifestModel):
     # Field definitions an admin can apply to endpoint types. Typed loosely so that an
     # invalid definition is reported by registry.py as a 422, not a request-shape 400.
     # Absent or null on PUT leaves the stored set unchanged; `{}` clears it.
-    endpoint_fields: Optional[Dict[str, Dict[str, Any]]] = None
+    endpoint_fields: Optional[Dict[str, Any]] = None
 
 
 class RouteDetail(RouteSpec):

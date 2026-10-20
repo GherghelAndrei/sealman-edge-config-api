@@ -14,11 +14,12 @@ from routers.schemas import normalize_field_definition
 
 
 def validate_endpoint_fields(
-    raw: Optional[Dict[str, Dict[str, Any]]],
+    raw: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Dict[str, Any]]]:
     """Returns the normalized definitions, or None when the section is absent.
 
-    Raises APIError(422) for an invalid definition or one with `required: true`.
+    Raises APIError(422) for an invalid definition (including one that is not an
+    object) or one with `required: true`.
     """
     if raw is None:
         return None

@@ -15,6 +15,9 @@ def test_normalizes_definitions():
     result = validate_endpoint_fields({"serial_number": {"type": "string", "label": "S"}})
     assert result["serial_number"]["ui"] == "input"
     assert result["serial_number"]["required"] is False
+    assert "validation" not in result["serial_number"]
+    assert "options" not in result["serial_number"]
+    assert "description" not in result["serial_number"]
 
 
 def test_empty_object_stays_empty():
@@ -33,6 +36,14 @@ def test_invalid_definition_is_422():
         validate_endpoint_fields({"x": {"type": "string"}})
     assert exc_info.value.status_code == 422
     assert str(exc_info.value).startswith("Invalid endpoint field 'x'")
+
+
+@pytest.mark.parametrize("definition", ["string", ["string"], 1, None])
+def test_non_object_definition_is_422(definition):
+    with pytest.raises(APIError) as exc_info:
+        validate_endpoint_fields({"serial_number": definition})
+    assert exc_info.value.status_code == 422
+    assert str(exc_info.value).startswith("Invalid endpoint field 'serial_number'")
 
 
 @pytest.mark.asyncio

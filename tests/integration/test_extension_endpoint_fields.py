@@ -48,6 +48,14 @@ class TestManifestEndpointFields:
 
         assert (await client.get(f"/extensions/{name}")).status_code == 404
 
+    async def test_register_non_object_definition_is_422(self, client):
+        name = unique_extension_name()
+        response = await _register(client, name, {"serial_number": "string"})
+        assert response.status_code == 422, response.text
+        assert "Invalid endpoint field 'serial_number'" in response.text
+
+        assert (await client.get(f"/extensions/{name}")).status_code == 404
+
     async def test_put_without_section_keeps_stored_fields(self, client):
         name = unique_extension_name()
         assert (await _register(client, name, {"serial_number": STRING_FIELD})).status_code == 201
