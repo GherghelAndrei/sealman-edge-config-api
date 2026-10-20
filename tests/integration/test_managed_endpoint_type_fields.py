@@ -256,13 +256,34 @@ class TestPatchWithExtensionFields:
         type_id = await seed_endpoint_type(db_session)
         before = (await client.get(f"/endpoint-types/{type_id}")).json()
 
-        for extension_fields in ({"missing_ext": ["serial_number"]}, {name: ["nope"]}):
+        cases = (
+            ({"missing_ext": ["serial_number"]}, "Extension 'missing_ext' not found"),
+            ({name: ["nope"]}, f"Extension '{name}' declares no endpoint field 'nope'"),
+        )
+        for extension_fields, message in cases:
             response = await client.patch(
                 f"/endpoint-types/{type_id}",
                 json={"label": _label(), "extension_fields": extension_fields},
             )
             assert response.status_code == 404, response.text
+            assert response.json()["message"] == message
         await self._assert_unchanged(client, type_id, before)
+
+    async def test_patch_unknown_type_with_extension_fields_is_type_404(self, client, db_session):
+        enabled = await seed_extension(db_session, {"serial_number": STRING_FIELD})
+        disabled = await seed_extension(db_session, {"batch": STRING_FIELD}, enabled=False)
+        missing_type = "00000000-0000-0000-0000-000000000000"
+
+        for extension_fields in (
+            {enabled: ["serial_number"]},
+            {"missing_ext": ["serial_number"]},
+            {disabled: ["batch"]},
+        ):
+            response = await client.patch(
+                f"/endpoint-types/{missing_type}", json={"extension_fields": extension_fields}
+            )
+            assert response.status_code == 404, response.text
+            assert response.json()["message"] == f"EndpointType '{missing_type}' not found"
 
     async def test_patch_role_on_managed_field_is_422(self, client, db_session):
         name = await seed_extension(db_session, {"serial_number": STRING_FIELD})

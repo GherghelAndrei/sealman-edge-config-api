@@ -125,15 +125,16 @@ async def update_endpoint_type(
         else None
     )
     try:
+        # Checked first, so an unknown type gives its own 404 before any extension_fields error.
+        current = await repo.get_endpoint_type(type_id)
+        if current is None:
+            raise HTTPException(
+                status_code=404, detail=f"EndpointType '{type_id}' not found"
+            )
         added_fields, added_managed_by = await resolve_extension_fields(
             extension_repo, body.extension_fields or {}, set(body.fields or {})
         )
         if field_patch is not None:
-            current = await repo.get_endpoint_type(type_id)
-            if current is None:
-                raise HTTPException(
-                    status_code=404, detail=f"EndpointType '{type_id}' not found"
-                )
             merged_fields = patch_fields(current["fields"], field_patch)
             for field_key, field_dict in merged_fields.items():
                 try:
