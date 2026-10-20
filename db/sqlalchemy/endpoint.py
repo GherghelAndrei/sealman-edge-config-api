@@ -13,7 +13,7 @@ from db.merge import (
     reject_non_changeable_updates,
     validate_instance_data,
 )
-from db.managed_fields import reject_roles_on_managed_fields
+from db.managed_fields import merge_changed_definition, reject_roles_on_managed_fields
 from db.transaction import commit_session
 from db.type_roles import ENDPOINT_ROLE_TYPES, drop_roles_of_missing_fields, validate_type_mapping
 from exceptions import APIError, ValidationError
@@ -191,6 +191,51 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
                 )
         await commit_session(self._session)
         return {"applied": applied, "skipped": skipped}
+
+    async def release_managed_fields(self, extension: str, keys: Optional[List[str]] = None) -> None:
+        released = None if keys is None else set(keys)
+        result = await self._session.execute(select(EndpointType))
+        for et in result.scalars().all():
+            current = et.managed_by or {}
+            # A new dict: the stored JSONB value is never mutated in place.
+            new_managed_by = {
+                key: owner
+                for key, owner in current.items()
+                if owner != extension or (released is not None and key not in released)
+            }
+            if new_managed_by != current:
+                await self._session.execute(
+                    update(EndpointType)
+                    .where(EndpointType.type_id == et.type_id)
+                    .values(managed_by=new_managed_by)
+                )
+        await commit_session(self._session)
+
+    async def update_managed_field_definitions(
+        self,
+        extension: str,
+        old_definitions: Dict[str, Dict[str, Any]],
+        new_definitions: Dict[str, Dict[str, Any]],
+    ) -> None:
+        result = await self._session.execute(select(EndpointType))
+        for et in result.scalars().all():
+            managed_by = et.managed_by or {}
+            current_fields = et.fields or {}
+            # A new dict: the stored JSONB value is never mutated in place.
+            new_fields = dict(current_fields)
+            for key, new_def in new_definitions.items():
+                if managed_by.get(key) != extension or key not in current_fields:
+                    continue
+                new_fields[key] = merge_changed_definition(
+                    current_fields[key], old_definitions.get(key) or {}, new_def
+                )
+            if new_fields != current_fields:
+                await self._session.execute(
+                    update(EndpointType)
+                    .where(EndpointType.type_id == et.type_id)
+                    .values(fields=new_fields)
+                )
+        await commit_session(self._session)
 
     async def delete_endpoint_type(self, type_id: str, cascade: bool = False) -> None:
         await self._get_endpoint_type_or_raise(type_id)

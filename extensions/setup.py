@@ -21,6 +21,7 @@ from constants import (
     EXTENSIONS_INTERNAL_API_HOST,
     EXTENSIONS_INTERNAL_API_PORT,
 )
+from db.repos.endpoint import EndpointRepository
 from db.repos.extension import ExtensionRepository
 from db.repos.role import RoleRepository
 from db.session import AsyncSessionLocal, get_repository
@@ -142,9 +143,12 @@ def _build_management_router() -> BaseAPIRouter:
         name: str,
         registration: ExtensionRegistration,
         extension_repo: ExtensionRepository = Depends(get_repository(ExtensionRepository)),
+        # Shares extension_repo's session (get_db is cached per request), so the type
+        # changes commit in the same transaction as the manifest.
+        endpoint_repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
     ) -> ExtensionDetail:
         async with _extension_locks[name]:
-            detail = await registry.replace_extension(extension_repo, name, registration)
+            detail = await registry.replace_extension(extension_repo, name, registration, endpoint_repo)
             if not detail.enabled:
                 return detail
             # New route ids only exist after the commit, so this build cannot precede it.

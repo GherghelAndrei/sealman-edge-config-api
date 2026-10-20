@@ -17,16 +17,17 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from jsonschema.exceptions import SchemaError
 
+from db.repos.endpoint import EndpointRepository
 from db.repos.extension import ExtensionActionConflictError, ExtensionRepository
 from db.repos.role import RoleRepository
 from exceptions import APIError
 
 from . import body_validation, health, signature
-from .endpoint_fields import validate_endpoint_field_ownership, validate_endpoint_fields
+from .endpoint_fields import diff_endpoint_fields, validate_endpoint_field_ownership, validate_endpoint_fields
 from .schemas import ExtensionHealthCheckResult, ExtensionRegistration, ExtensionDetail, RouteSpec, UpstreamSpec
 from .security import generate_key, hash_key
 from .upstreams import http as http_upstream
@@ -367,12 +368,38 @@ async def register_extension(
     return await _build_detail(extension_repo, registration.name)
 
 
+async def _apply_endpoint_field_diff(
+    endpoint_repo: EndpointRepository,
+    name: str,
+    old: Dict[str, Dict[str, Any]],
+    new: Dict[str, Dict[str, Any]],
+) -> None:
+    """Brings the endpoint types in line with a manifest's new declared fields (spec 4.4).
+
+    Managed fields never carry a role, so a changed definition cannot invalidate a mapping.
+    """
+    diff = diff_endpoint_fields(old, new)
+    if diff.removed:
+        await endpoint_repo.release_managed_fields(name, diff.removed)
+    if diff.changed:
+        await endpoint_repo.update_managed_field_definitions(
+            name, {key: old[key] for key in diff.changed}, {key: new[key] for key in diff.changed}
+        )
+
+
 async def replace_extension(
     extension_repo: ExtensionRepository,
     name: str,
     registration: ExtensionRegistration,
+    endpoint_repo: EndpointRepository,
 ) -> ExtensionDetail:
     """Replaces `name`'s manifest in one database transaction. Never changes `enabled`.
+
+    When the manifest has an `endpoint_fields` section, the same transaction updates the
+    endpoint types the fields are applied to, enabled or not: a removed key stops being
+    managed (the definition stays as an admin field), a changed definition is rewritten on
+    the types (keeping the admin's label, description and show_in_list), and a new key is
+    only stored. `endpoint_repo` must share `extension_repo`'s session.
 
     Refuses (409) to drop an action that is still granted to a role that check
     runs before any write. Live route remount, if the extension is enabled, is
@@ -397,6 +424,8 @@ async def replace_extension(
                 409,
             )
 
+    old_endpoint_fields = existing.get("endpoint_fields") or {}
+
     await extension_repo.release_connection()
     upstreams, routes = await _prepare_persistence(registration)
     try:
@@ -409,6 +438,7 @@ async def replace_extension(
             # An absent section leaves the stored fields unchanged (clients may drop it).
             if endpoint_fields is not None:
                 await extension_repo.set_endpoint_fields(name, endpoint_fields)
+                await _apply_endpoint_field_diff(endpoint_repo, name, old_endpoint_fields, endpoint_fields)
             # A route's required_action FK depends on the action row already existing.
             await extension_repo.clear_extension_actions(name)
             await _enroll_actions(extension_repo, registration)

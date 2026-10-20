@@ -147,3 +147,18 @@ class TestMergeChangedDefinition:
 
         assert new_def == {"type": "string", "label": "B"}
         assert type_def == {"type": "string", "label": "Mine"}
+
+    def test_merge_results_do_not_share_nested_dicts(self):
+        old_def = {"type": "string", "label": "A", "validation": {"max_length": 10}, "options": ["x"]}
+        type_def = {"type": "string", "label": "Mine", "validation": {"max_length": 10}, "options": ["x"]}
+        new_def = {"type": "string", "label": "B", "validation": {"max_length": 20}, "options": ["x", "y"]}
+
+        first = merge_changed_definition(type_def, old_def, new_def)
+        second = merge_changed_definition(type_def, old_def, new_def)
+        first["validation"]["max_length"] = 99
+        first["options"].append("z")
+
+        assert second["validation"] == {"max_length": 20}
+        assert second["options"] == ["x", "y"]
+        assert new_def["validation"] == {"max_length": 20}
+        assert new_def["options"] == ["x", "y"]

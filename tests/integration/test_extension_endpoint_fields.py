@@ -1,4 +1,7 @@
-"""An extension manifest's `endpoint_fields` section: validation, storage and GET output."""
+"""An extension manifest's `endpoint_fields` section: validation, storage, GET output, and how
+a manifest update changes the endpoint types the fields are applied to."""
+import pytest
+
 from tests.integration.extension_fixtures import STRING_FIELD, manifest, unique_extension_name
 
 
@@ -156,3 +159,263 @@ class TestEndpointFieldOwnership:
 
         response = await _register(client, other, {"serial_number": STRING_FIELD})
         assert response.status_code == 201, response.text
+
+
+TEXTAREA_FIELD = {**STRING_FIELD, "ui": "textarea"}
+UPDATE_DEVICE = "manifest-update-dev"
+UPDATE_USER_OID = "manifest-update-perm-oid"
+
+
+async def _registered_with_applied_type(client, endpoint_fields=None):
+    """Registers and enables an extension, then applies its fields to a new type. -> (name, type_id)"""
+    endpoint_fields = endpoint_fields or {"serial_number": STRING_FIELD}
+    name = unique_extension_name()
+    assert (await _register(client, name, endpoint_fields)).status_code == 201
+    assert (await client.post(f"/extensions/{name}/enable")).status_code == 200
+    created = await client.post("/endpoint-types", json={"label": f"type-{name}", "fields": {}})
+    assert created.status_code == 201, created.text
+    type_id = created.json()["type_id"]
+    applied = await client.post(
+        f"/extension-fields/{name}/apply", json={"type_ids": [type_id], "keys": list(endpoint_fields)}
+    )
+    assert applied.status_code == 200, applied.text
+    assert len(applied.json()["applied"]) == len(endpoint_fields)
+    return name, type_id
+
+
+async def _get_type(client, type_id):
+    response = await client.get(f"/endpoint-types/{type_id}")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _put(client, name, endpoint_fields):
+    return await client.put(f"/extensions/{name}", json=manifest(name, endpoint_fields))
+
+
+class TestManifestUpdateOnTypes:
+    async def test_removed_key_becomes_admin_field(self, client):
+        name, type_id = await _registered_with_applied_type(
+            client, {"serial_number": STRING_FIELD, "batch": STRING_FIELD}
+        )
+        before = await _get_type(client, type_id)
+
+        response = await _put(client, name, {"batch": STRING_FIELD})
+        assert response.status_code == 200, response.text
+
+        after = await _get_type(client, type_id)
+        assert after["managed_by"] == {"batch": name}
+        assert after["fields"]["serial_number"] == before["fields"]["serial_number"]
+
+        relock = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"serial_number": TEXTAREA_FIELD}}
+        )
+        assert relock.status_code == 200, relock.text
+        role = await client.patch(f"/endpoint-types/{type_id}", json={"mapping": {"serial_number": "name"}})
+        assert role.status_code == 200, role.text
+
+    async def test_removed_last_key_clears_marker(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+
+        assert (await _put(client, name, {})).status_code == 200
+
+        after = await _get_type(client, type_id)
+        assert after["managed_by"] == {}
+        assert after["fields"]["serial_number"]["label"] == "Serial number"
+
+    async def test_changed_definition_updates_type(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+
+        response = await _put(client, name, {"serial_number": TEXTAREA_FIELD})
+        assert response.status_code == 200, response.text
+
+        after = await _get_type(client, type_id)
+        assert after["fields"]["serial_number"]["ui"] == "textarea"
+        assert after["managed_by"] == {"serial_number": name}
+
+    async def test_changed_definition_keeps_admin_label(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+        relabel = await client.patch(
+            f"/endpoint-types/{type_id}", json={"fields": {"serial_number": {**STRING_FIELD, "label": "Mine"}}}
+        )
+        assert relabel.status_code == 200, relabel.text
+
+        response = await _put(client, name, {"serial_number": {**TEXTAREA_FIELD, "label": "Serial no."}})
+        assert response.status_code == 200, response.text
+
+        field = (await _get_type(client, type_id))["fields"]["serial_number"]
+        assert field["label"] == "Mine"
+        assert field["ui"] == "textarea"
+
+    async def test_changed_definition_follows_unchanged_label(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+
+        response = await _put(client, name, {"serial_number": {**STRING_FIELD, "label": "Serial no."}})
+        assert response.status_code == 200, response.text
+
+        assert (await _get_type(client, type_id))["fields"]["serial_number"]["label"] == "Serial no."
+
+    async def test_changed_definition_only_touches_types_managed_by_the_extension(self, client, db_session):
+        name, type_id = await _registered_with_applied_type(client)
+        other_type = await client.post(
+            "/endpoint-types", json={"label": f"admin-{name}", "fields": {"serial_number": STRING_FIELD}}
+        )
+        assert other_type.status_code == 201, other_type.text
+        other_id = other_type.json()["type_id"]
+        other_before = await _get_type(client, other_id)
+
+        assert (await _put(client, name, {"serial_number": TEXTAREA_FIELD})).status_code == 200
+
+        assert await _get_type(client, other_id) == other_before
+        assert (await _get_type(client, type_id))["fields"]["serial_number"]["ui"] == "textarea"
+
+    async def test_changed_definition_never_touches_endpoint_values(self, client, db_session):
+        from sqlalchemy import select
+
+        from db.models.endpoint import Endpoint
+        from tests.integration.endpoint_fixtures import seed_endpoint
+        from tests.integration.test_abac_authorization import AbacFixtures
+
+        name, type_id = await _registered_with_applied_type(client)
+        await AbacFixtures(db_session).setup(devices={UPDATE_DEVICE: {}})
+        endpoint_id = await seed_endpoint(db_session, UPDATE_DEVICE, type_id, {"serial_number": "SN-1", "x": 1})
+
+        async def _stored():
+            return await db_session.scalar(
+                select(Endpoint.endpoint_data).where(Endpoint.endpoint_id == endpoint_id)
+            )
+
+        before = await _stored()
+        changed = {"serial_number": {"type": "number", "label": "Serial number"}}
+        assert (await _put(client, name, changed)).status_code == 200
+
+        assert await _stored() == before == {"serial_number": "SN-1", "x": 1}
+
+    async def test_new_key_is_not_applied(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+        before = await _get_type(client, type_id)
+
+        response = await _put(client, name, {"serial_number": STRING_FIELD, "batch": STRING_FIELD})
+        assert response.status_code == 200, response.text
+
+        after = await _get_type(client, type_id)
+        assert after["managed_by"] == before["managed_by"] == {"serial_number": name}
+        assert "batch" not in after["fields"]
+        listing = (await client.get("/extension-fields")).json()
+        item = next(entry for entry in listing if entry["extension"] == name)
+        assert item["applied"]["batch"] == []
+
+    async def test_put_without_section_leaves_types_unchanged(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+        before = await _get_type(client, type_id)
+
+        response = await client.put(f"/extensions/{name}", json=manifest(name))
+        assert response.status_code == 200, response.text
+
+        assert await _get_type(client, type_id) == before
+
+    async def test_put_null_section_leaves_types_unchanged(self, client):
+        name, type_id = await _registered_with_applied_type(client)
+        before = await _get_type(client, type_id)
+
+        body = {**manifest(name), "endpoint_fields": None}
+        response = await client.put(f"/extensions/{name}", json=body)
+        assert response.status_code == 200, response.text
+
+        assert await _get_type(client, type_id) == before
+
+    async def test_update_while_disabled_still_updates_types(self, client):
+        name, type_id = await _registered_with_applied_type(
+            client, {"serial_number": STRING_FIELD, "batch": STRING_FIELD}
+        )
+        assert (await client.post(f"/extensions/{name}/disable")).status_code == 200
+
+        response = await _put(client, name, {"serial_number": TEXTAREA_FIELD})
+        assert response.status_code == 200, response.text
+        assert response.json()["enabled"] is False
+
+        after = await _get_type(client, type_id)
+        assert after["fields"]["serial_number"]["ui"] == "textarea"
+        assert after["managed_by"] == {"serial_number": name}
+
+    async def test_failing_update_leaves_types_unchanged(self, client, monkeypatch):
+        from db.sqlalchemy.extension import SqlAlchemyExtensionRepository
+        from exceptions import APIError
+
+        name, type_id = await _registered_with_applied_type(
+            client, {"serial_number": STRING_FIELD, "batch": STRING_FIELD}
+        )
+        before = await _get_type(client, type_id)
+
+        async def _fail(self, *args, **kwargs):
+            raise APIError("simulated", 500)
+
+        monkeypatch.setattr(SqlAlchemyExtensionRepository, "replace_upstreams_and_routes", _fail)
+        response = await _put(client, name, {"serial_number": TEXTAREA_FIELD})
+        assert response.status_code == 500, response.text
+        monkeypatch.undo()
+
+        assert await _get_type(client, type_id) == before
+        detail = (await client.get(f"/extensions/{name}")).json()
+        assert set(detail["endpoint_fields"]) == {"serial_number", "batch"}
+
+
+class TestManifestUpdatePermissions:
+    @pytest.fixture
+    def fake_jwt_user(self):
+        return {
+            "oid": UPDATE_USER_OID,
+            "sub": UPDATE_USER_OID,
+            "preferred_username": "manifest-update-perm@test.com",
+            "name": "Manifest Update Perm",
+            "roles": [],
+        }
+
+    async def _grant(self, db_session, *actions):
+        from tests.integration.test_abac_authorization import AbacFixtures
+
+        await AbacFixtures(db_session).setup(
+            users={"tester": UPDATE_USER_OID},
+            roles={"r": list(actions)},
+            teams={"t": {"roles": ["r"], "users": ["tester"]}},
+        )
+
+    async def _seed(self, db_session):
+        from tests.integration.endpoint_fixtures import _endpoint_repo, unique_label
+        from tests.integration.extension_fixtures import seed_extension
+
+        name = await seed_extension(db_session, {"serial_number": STRING_FIELD, "batch": STRING_FIELD})
+        created = await _endpoint_repo(db_session).create_endpoint_type(
+            label=unique_label("et"),
+            description=None,
+            fields={"serial_number": STRING_FIELD, "batch": STRING_FIELD},
+            mapping={},
+            managed_by={"serial_number": name, "batch": name},
+        )
+        return name, created["type_id"]
+
+    async def test_extension_register_can_put_and_types_are_updated(self, client, db_session):
+        from tests.integration.endpoint_fixtures import _endpoint_repo
+
+        await self._grant(db_session, "extension.register")
+        name, type_id = await self._seed(db_session)
+
+        response = await _put(client, name, {"serial_number": TEXTAREA_FIELD})
+        assert response.status_code == 200, response.text
+
+        et = await _endpoint_repo(db_session).get_endpoint_type(type_id)
+        assert et["fields"]["serial_number"]["ui"] == "textarea"
+        assert et["managed_by"] == {"serial_number": name}
+
+    async def test_platform_config_write_alone_cannot_put(self, client, db_session):
+        from tests.integration.endpoint_fixtures import _endpoint_repo
+
+        await self._grant(db_session, "platform.config.write")
+        name, type_id = await self._seed(db_session)
+
+        response = await _put(client, name, {"serial_number": TEXTAREA_FIELD})
+        assert response.status_code == 403, response.text
+
+        et = await _endpoint_repo(db_session).get_endpoint_type(type_id)
+        assert et["managed_by"] == {"serial_number": name, "batch": name}
+        assert et["fields"]["serial_number"] == STRING_FIELD

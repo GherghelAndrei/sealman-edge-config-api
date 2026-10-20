@@ -6,6 +6,7 @@ Contributed fields are never required. Kept free of `extensions.registry` and
 """
 
 import copy
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from pydantic import ValidationError as PydanticValidationError
@@ -37,6 +38,32 @@ def validate_endpoint_fields(
             raise APIError(f"Endpoint field '{key}' cannot be required", 422)
         normalized[key] = normalized_definition
     return normalized
+
+
+@dataclass
+class EndpointFieldDiff:
+    """How a manifest update changes the declared fields. Every list is sorted."""
+
+    removed: List[str]
+    changed: List[str]
+    added: List[str]
+
+
+def diff_endpoint_fields(old: Dict[str, Dict[str, Any]], new: Dict[str, Dict[str, Any]]) -> EndpointFieldDiff:
+    """Compares the stored and the new declared fields by key.
+
+    A key in both is "changed" only when the normalized definitions differ, so a
+    definition that just spells out defaults is not a change.
+    """
+    return EndpointFieldDiff(
+        removed=sorted(old.keys() - new.keys()),
+        changed=sorted(
+            key
+            for key in old.keys() & new.keys()
+            if normalize_field_definition(old[key]) != normalize_field_definition(new[key])
+        ),
+        added=sorted(new.keys() - old.keys()),
+    )
 
 
 async def validate_endpoint_field_ownership(

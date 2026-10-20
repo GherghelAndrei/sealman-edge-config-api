@@ -93,3 +93,35 @@ async def test_row_without_endpoint_fields_is_not_a_conflict():
     extension_repo.list_extensions_rows.return_value = [{"name": "other"}]
 
     await validate_endpoint_field_ownership(extension_repo, "inventory", ["serial_number"])
+
+
+def test_diff_detects_removed_changed_added():
+    from extensions.endpoint_fields import EndpointFieldDiff, diff_endpoint_fields
+
+    old = {
+        "b_removed": {"type": "string", "label": "R"},
+        "a_removed": {"type": "string", "label": "R"},
+        "changed": {"type": "string", "label": "C"},
+        "same": {"type": "string", "label": "S"},
+    }
+    new = {
+        "changed": {"type": "string", "label": "C", "ui": "textarea"},
+        "same": {"type": "string", "label": "S"},
+        "z_added": {"type": "number", "label": "Z"},
+        "y_added": {"type": "string", "label": "Y"},
+    }
+
+    assert diff_endpoint_fields(old, new) == EndpointFieldDiff(
+        removed=["a_removed", "b_removed"], changed=["changed"], added=["y_added", "z_added"]
+    )
+
+
+def test_diff_ignores_equal_normalized_definitions():
+    from extensions.endpoint_fields import diff_endpoint_fields
+
+    diff = diff_endpoint_fields(
+        {"serial_number": {"type": "string", "label": "S"}},
+        {"serial_number": {"type": "string", "label": "S", "ui": "input"}},
+    )
+
+    assert diff.removed == [] and diff.changed == [] and diff.added == []

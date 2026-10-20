@@ -51,6 +51,25 @@ class EndpointRepository(ABC):
         ...
 
     @abstractmethod
+    async def release_managed_fields(self, extension: str, keys: Optional[List[str]] = None) -> None:
+        """On every type, removes the `managed_by` entries owned by `extension`: all of them when
+        `keys` is None, otherwise only those listed. The field definitions stay on the types."""
+        ...
+
+    @abstractmethod
+    async def update_managed_field_definitions(
+        self,
+        extension: str,
+        old_definitions: Dict[str, Dict[str, Any]],
+        new_definitions: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """On every type where a key of `new_definitions` is managed by `extension`, replaces the
+        field's definition with the new one, keeping the admin's label, description and
+        show_in_list where they differ from `old_definitions` (see `merge_changed_definition`).
+        Never touches endpoint data."""
+        ...
+
+    @abstractmethod
     async def delete_endpoint_type(self, type_id: str, cascade: bool = False) -> None:
         """Deletes the type. If `cascade` is False and endpoints of this type still exist,
         raises APIError(409). If `cascade` is True, deletes those endpoints (and, via FK

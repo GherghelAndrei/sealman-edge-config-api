@@ -3,6 +3,7 @@
 A managed field's definition comes from the extension's manifest. It cannot carry a role: roles
 come from admin fields only. Once a field stops being managed it is a normal field again.
 """
+import copy
 from typing import Any, Dict, Mapping
 
 from exceptions import ValidationError
@@ -30,14 +31,14 @@ def merge_changed_definition(
 
     The new manifest definition wins, except for an admin-editable attribute the admin changed
     on this type (it differs from `old_def`): that keeps the type's value, and is dropped when
-    the admin removed it. Returns a new dict; the inputs are not changed.
+    the admin removed it. Returns a deep copy: no nested value is shared with the inputs.
     """
-    merged = dict(new_def)
+    merged = copy.deepcopy(new_def)
     for attribute in ADMIN_EDITABLE_ATTRIBUTES:
         type_value = type_def.get(attribute)
         if type_value != old_def.get(attribute):
             if type_value is None:
                 merged.pop(attribute, None)
             else:
-                merged[attribute] = type_value
+                merged[attribute] = copy.deepcopy(type_value)
     return merged
