@@ -84,6 +84,15 @@ class EndpointRepository(ABC):
     ) -> List[Dict[str, Any]]: ...
 
     @abstractmethod
+    async def get_endpoints_by_types(
+        self, device_id: str, type_ids: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Raw rows `{endpoint_id, device_id, type_id, created_at, updated_at, endpoint_data}` of the
+        device's endpoints whose type is in `type_ids`, with stored values only (no type defaults).
+        Ordered by `created_at`, then `endpoint_id`. Empty `type_ids` gives []."""
+        ...
+
+    @abstractmethod
     async def get_endpoint(self, endpoint_id: str) -> Optional[Dict[str, Any]]: ...
 
     @abstractmethod

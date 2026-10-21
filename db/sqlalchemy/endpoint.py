@@ -270,6 +270,29 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
         result = await self._session.execute(stmt)
         return [self._serialize_resolved(e, et) for e, et in result.all()]
 
+    async def get_endpoints_by_types(
+        self, device_id: str, type_ids: List[str]
+    ) -> List[Dict[str, Any]]:
+        if not type_ids:
+            return []
+        result = await self._session.execute(
+            select(Endpoint)
+            .where(Endpoint.device_id == device_id, Endpoint.type_id.in_(type_ids))
+            .order_by(Endpoint.created_at, Endpoint.endpoint_id)
+        )
+        return [self._serialize_raw(e) for e in result.scalars().all()]
+
+    @staticmethod
+    def _serialize_raw(endpoint: Endpoint) -> Dict[str, Any]:
+        return {
+            "endpoint_id": endpoint.endpoint_id,
+            "device_id": endpoint.device_id,
+            "type_id": endpoint.type_id,
+            "created_at": endpoint.created_at,
+            "updated_at": endpoint.updated_at,
+            "endpoint_data": endpoint.endpoint_data or {},
+        }
+
     async def get_endpoint(self, endpoint_id: str) -> Optional[Dict[str, Any]]:
         result = await self._session.execute(
             select(Endpoint, EndpointType)

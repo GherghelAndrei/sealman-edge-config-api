@@ -84,3 +84,32 @@ async def test_valid_key_returns_row_and_audits_extension(logged):
     assert row is _ROWS["widgets"]
     assert logged[0][0] == "extension:widgets"
     assert "internal GET /core/extensions/widgets/endpoints" in logged[0][1]
+
+
+def test_managed_keys_by_type_keeps_only_own_keys_sorted():
+    types = [
+        {"type_id": "a", "managed_by": {"z_key": "widgets", "a_key": "widgets", "o": "gadgets"}},
+        {"type_id": "b", "managed_by": {}},
+        {"type_id": "c", "managed_by": {"o": "gadgets"}},
+        {"type_id": "d"},
+    ]
+    assert core_api.managed_keys_by_type(types, "widgets") == {"a": ["a_key", "z_key"]}
+
+
+def test_project_endpoint_keeps_only_stored_listed_keys():
+    row = {
+        "endpoint_id": "e1",
+        "device_id": "d1",
+        "type_id": "t1",
+        "created_at": "c",
+        "updated_at": "u",
+        "endpoint_data": {"serial_number": "SN", "note": "n"},
+    }
+    assert core_api.project_endpoint(row, ["asset_tag", "serial_number"]) == {
+        "endpoint_id": "e1",
+        "device_id": "d1",
+        "type_id": "t1",
+        "created_at": "c",
+        "updated_at": "u",
+        "data": {"serial_number": "SN"},
+    }

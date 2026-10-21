@@ -225,3 +225,15 @@ class ExtensionHealthCheckResult(BaseModel):
 
 class InternalKeyRotateResponse(BaseModel):
     internal_key: str
+
+
+class InternalEndpoint(BaseModel):
+    """An endpoint as an extension sees it on the internal Core routes: `data` holds only the
+    stored values of the keys this extension manages on the endpoint's type."""
+
+    endpoint_id: str
+    device_id: str
+    type_id: str
+    created_at: datetime
+    updated_at: datetime
+    data: Dict[str, Any]
