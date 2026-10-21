@@ -237,3 +237,18 @@ class InternalEndpoint(BaseModel):
     created_at: datetime
     updated_at: datetime
     data: Dict[str, Any]
+
+
+class InternalDeviceEndpoints(BaseModel):
+    device_id: str
+    endpoints: List[InternalEndpoint]
+
+
+class InternalEndpointPage(BaseModel):
+    """One page of devices for the cross-device internal Core route; `total_devices` counts all
+    devices with at least one matching endpoint."""
+
+    devices: List[InternalDeviceEndpoints]
+    page: int
+    page_size: int
+    total_devices: int

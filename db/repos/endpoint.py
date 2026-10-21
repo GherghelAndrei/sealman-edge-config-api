@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from abc import ABC, abstractmethod
 
 
@@ -90,6 +90,20 @@ class EndpointRepository(ABC):
         """Raw rows `{endpoint_id, device_id, type_id, created_at, updated_at, endpoint_data}` of the
         device's endpoints whose type is in `type_ids`, with stored values only (no type defaults).
         Ordered by `created_at`, then `endpoint_id`. Empty `type_ids` gives []."""
+        ...
+
+    @abstractmethod
+    async def page_devices_by_types(
+        self, type_ids: List[str], non_empty_key: Optional[str], page: int, page_size: int
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Pages devices with at least one matching endpoint and returns `(rows, total_devices)`.
+
+        An endpoint matches when its type is in `type_ids` and, if `non_empty_key` is set, its
+        stored value for that key is neither missing, JSON `null` nor `""`. Devices are ordered
+        by their earliest matching endpoint's `created_at` descending, then `device_id`.
+        `rows` are the raw rows (as in `get_endpoints_by_types`) of the matching endpoints of
+        the page's devices, ordered by device rank, then `created_at`, then `endpoint_id`.
+        `total_devices` counts all devices with a matching endpoint. Empty `type_ids` gives ([], 0)."""
         ...
 
     @abstractmethod

@@ -1,6 +1,6 @@
 import copy
-from typing import Any, Dict, List, Optional
-from sqlalchemy import select, update, delete
+from typing import Any, Dict, List, Optional, Tuple
+from sqlalchemy import delete, distinct, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.models.endpoint import Endpoint, EndpointType
@@ -281,6 +281,44 @@ class SqlAlchemyEndpointRepository(BlueprintResolver, EndpointRepository):
             .order_by(Endpoint.created_at, Endpoint.endpoint_id)
         )
         return [self._serialize_raw(e) for e in result.scalars().all()]
+
+    async def page_devices_by_types(
+        self, type_ids: List[str], non_empty_key: Optional[str], page: int, page_size: int
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        if not type_ids:
+            return [], 0
+        matching = [Endpoint.type_id.in_(type_ids)]
+        if non_empty_key is not None:
+            # `->>` gives SQL NULL for a missing key and for JSON null, and '' for "".
+            # `false` and `0` read as 'false' and '0', so they match.
+            value = Endpoint.endpoint_data[non_empty_key].astext
+            matching += [value.isnot(None), value != ""]
+
+        total = await self._session.scalar(
+            select(func.count(distinct(Endpoint.device_id))).where(*matching)
+        )
+        rank = func.min(Endpoint.created_at).label("rank")
+        ranked = (
+            select(Endpoint.device_id, rank)
+            .where(*matching)
+            .group_by(Endpoint.device_id)
+            .order_by(rank.desc(), Endpoint.device_id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .subquery()
+        )
+        result = await self._session.execute(
+            select(Endpoint)
+            .join(ranked, Endpoint.device_id == ranked.c.device_id)
+            .where(*matching)
+            .order_by(
+                ranked.c.rank.desc(),
+                ranked.c.device_id,
+                Endpoint.created_at,
+                Endpoint.endpoint_id,
+            )
+        )
+        return [self._serialize_raw(e) for e in result.scalars().all()], total or 0
 
     @staticmethod
     def _serialize_raw(endpoint: Endpoint) -> Dict[str, Any]:

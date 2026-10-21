@@ -9,7 +9,7 @@ Must not import `extensions.setup` (it includes `core_router`), to avoid an impo
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
 from db.repos.endpoint import EndpointRepository
 from db.repos.extension import ExtensionRepository
@@ -17,7 +17,7 @@ from db.session import get_repository
 from helper import AuditTrail
 
 from .runtime import verify_internal_key
-from .schemas import InternalEndpoint
+from .schemas import InternalEndpoint, InternalEndpointPage
 
 core_router = APIRouter(prefix="/core/extensions/{name}")
 
@@ -75,3 +75,40 @@ async def get_device_endpoints(
     keys_by_type = managed_keys_by_type(await endpoint_repo.get_endpoint_types(), name)
     rows = await endpoint_repo.get_endpoints_by_types(device_id, list(keys_by_type))
     return [project_endpoint(row, keys_by_type[row["type_id"]]) for row in rows]
+
+
+@core_router.get("/endpoints", response_model=InternalEndpointPage)
+async def get_endpoints_across_devices(
+    name: str,
+    non_empty: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    caller: Dict[str, Any] = Depends(core_extension_caller),
+    endpoint_repo: EndpointRepository = Depends(get_repository(EndpointRepository)),
+) -> Dict[str, Any]:
+    """Devices with at least one in-scope endpoint (with `non_empty`: whose stored value for that
+    key, managed by this extension, is not missing, null or ""), paginated by device. Devices are
+    ordered by their earliest matching endpoint's `created_at` descending, then `device_id`; each
+    lists only its matching endpoints, by `created_at`, then `endpoint_id`."""
+    if non_empty is not None and non_empty not in (caller.get("endpoint_fields") or {}):
+        raise HTTPException(
+            status_code=422,
+            detail=f"'{non_empty}' is not an endpoint field of extension '{name}'",
+        )
+    keys_by_type = managed_keys_by_type(await endpoint_repo.get_endpoint_types(), name)
+    if non_empty is not None:
+        keys_by_type = {t: keys for t, keys in keys_by_type.items() if non_empty in keys}
+    rows, total_devices = await endpoint_repo.page_devices_by_types(
+        list(keys_by_type), non_empty, page, page_size
+    )
+    devices: List[Dict[str, Any]] = []
+    for row in rows:
+        if not devices or devices[-1]["device_id"] != row["device_id"]:
+            devices.append({"device_id": row["device_id"], "endpoints": []})
+        devices[-1]["endpoints"].append(project_endpoint(row, keys_by_type[row["type_id"]]))
+    return {
+        "devices": devices,
+        "page": page,
+        "page_size": page_size,
+        "total_devices": total_devices,
+    }
