@@ -81,7 +81,7 @@ async def get_device_endpoints(
 async def get_endpoints_across_devices(
     name: str,
     non_empty: Optional[str] = None,
-    page: int = Query(1, ge=1),
+    page: int = Query(1, ge=1, le=1_000_000),
     page_size: int = Query(20, ge=1, le=100),
     caller: Dict[str, Any] = Depends(core_extension_caller),
     endpoint_repo: EndpointRepository = Depends(get_repository(EndpointRepository)),

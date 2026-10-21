@@ -496,9 +496,23 @@ class TestAcrossDevices:
     async def test_page_limits_are_422(self, internal_client, db_session):
         name, key = await seed_keyed_extension(db_session, {"serial_number": STRING_FIELD})
 
-        for params in ({"page": 0}, {"page_size": 0}, {"page_size": 101}, {"page": "x"}):
+        for params in (
+            {"page": 0},
+            {"page": 1_000_001},
+            {"page": 10**18},
+            {"page_size": 0},
+            {"page_size": 101},
+            {"page": "x"},
+        ):
             response = await _get_page(internal_client, name, key, **params)
             assert response.status_code == 422, (params, response.text)
+
+    async def test_largest_page_is_accepted(self, internal_client, db_session):
+        name, key = await seed_keyed_extension(db_session, {"serial_number": STRING_FIELD})
+
+        response = await _get_page(internal_client, name, key, page=1_000_000, page_size=100)
+        assert response.status_code == 200, response.text
+        assert response.json()["devices"] == []
 
     async def test_auth_401_and_403(self, internal_client, db_session):
         name, _ = await seed_keyed_extension(db_session, {"serial_number": STRING_FIELD})
