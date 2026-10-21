@@ -29,6 +29,7 @@ from exceptions import APIError
 from routers.base_api_router import BaseAPIRouter
 
 from . import registry, runtime
+from .core_api import core_router
 from .schemas import (
     ExtensionDetail,
     ExtensionHealthCheckResult,
@@ -52,6 +53,9 @@ internal_app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+
+internal_app.include_router(core_router)
 
 
 @internal_app.get("/", include_in_schema=False)
