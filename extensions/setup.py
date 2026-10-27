@@ -14,6 +14,7 @@ from typing import DefaultDict, List, Optional
 import uvicorn
 from fastapi import Depends, FastAPI
 
+from auth import validate_jwt
 from authorization.abac_permission_check import ABACPermissionCheck
 from authorization.permission_types import Extension
 from constants import (
@@ -29,6 +30,7 @@ from routers.base_api_router import BaseAPIRouter
 
 from . import registry, runtime
 from .schemas import (
+    EnabledExtension,
     ExtensionDetail,
     ExtensionHealthCheckResult,
     ExtensionRegistration,
@@ -113,6 +115,22 @@ def _build_management_router() -> BaseAPIRouter:
         extension_repo: ExtensionRepository = Depends(get_repository(ExtensionRepository)),
     ) -> List[ExtensionDetail]:
         return await registry.list_extensions(extension_repo)
+
+    # Before "/{name}" so the literal segment is not captured as a name.
+    @router.get(
+        "/enabled",
+        summary="List enabled extensions (names only)",
+        description=(
+            "Open to any authenticated user (no ABAC action): the app uses it to discover "
+            "which extensions to ask for their own `/<name>/ui`. Names only, sorted."
+        ),
+        response_model=List[EnabledExtension],
+        dependencies=[Depends(validate_jwt)],
+    )
+    async def list_enabled_extensions(
+        extension_repo: ExtensionRepository = Depends(get_repository(ExtensionRepository)),
+    ) -> List[EnabledExtension]:
+        return await registry.list_enabled_extensions(extension_repo)
 
     @router.get(
         "/{name}",

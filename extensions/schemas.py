@@ -212,6 +212,10 @@ class ExtensionDetail(ExtensionRegistration):
     enabled: bool = False
 
 
+class EnabledExtension(BaseModel):
+    name: str
+
+
 class ExtensionHealthCheckResult(BaseModel):
     name: str
     upstreams: Dict[str, UpstreamHealthStatus]

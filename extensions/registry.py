@@ -26,7 +26,7 @@ from db.repos.role import RoleRepository
 from exceptions import APIError
 
 from . import body_validation, health, signature
-from .schemas import ExtensionHealthCheckResult, ExtensionRegistration, ExtensionDetail, RouteSpec, UpstreamSpec
+from .schemas import EnabledExtension, ExtensionHealthCheckResult, ExtensionRegistration, ExtensionDetail, RouteSpec, UpstreamSpec
 from .security import generate_key, hash_key
 from .upstreams import http as http_upstream
 from .upstreams.iotedge import probe_registration_health
@@ -417,6 +417,11 @@ async def get_extension(extension_repo: ExtensionRepository, name: str) -> Exten
 async def list_extensions(extension_repo: ExtensionRepository) -> List[ExtensionDetail]:
     rows = await extension_repo.list_extensions_rows()
     return [await _build_detail(extension_repo, row["name"]) for row in rows]
+
+
+async def list_enabled_extensions(extension_repo: ExtensionRepository) -> List[EnabledExtension]:
+    rows = await extension_repo.list_extensions_rows()
+    return [EnabledExtension(name=row["name"]) for row in rows if row["enabled"]]
 
 
 async def check_extension_health(extension_repo: ExtensionRepository, name: str) -> ExtensionHealthCheckResult:

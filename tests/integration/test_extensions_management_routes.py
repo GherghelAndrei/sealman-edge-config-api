@@ -520,3 +520,55 @@ class TestExtensionsManagementRoutesAuthorization:
 
         assert (await client.post(f"/extensions/{name}/disable")).status_code == 403
         assert (await client.delete(f"/extensions/{name}")).status_code == 403
+
+
+class TestEnabledExtensionsList:
+    async def test_enabled_lists_only_enabled_extensions(self, client):
+        on_b, on_a, off = (_unique_name(p) for p in ("zz_on", "aa_on", "mm_off"))
+        for ext_name in (on_b, on_a, off):
+            assert (await client.post("/extensions", json=_sample_registration(ext_name))).status_code == 201
+        for ext_name in (on_b, on_a):
+            assert (await client.post(f"/extensions/{ext_name}/enable")).status_code == 200
+
+        response = await client.get("/extensions/enabled")
+        assert response.status_code == 200
+        body = response.json()
+        assert all(set(item) == {"name"} for item in body)
+        names = [item["name"] for item in body]
+        assert on_a in names and on_b in names and off not in names
+        assert names == sorted(names)
+
+        for ext_name in (on_b, on_a, off):
+            await client.delete(f"/extensions/{ext_name}")
+
+    async def test_enabled_route_not_shadowed_by_name(self, client):
+        response = await client.get("/extensions/enabled")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+
+class TestEnabledExtensionsListAsPlainUser:
+    @pytest.fixture
+    def fake_jwt_user(self):
+        return {
+            "oid": "extensions-test-oid",
+            "sub": "extensions-test-oid",
+            "preferred_username": "extensions-test@test.com",
+            "name": "Extensions Test",
+            "roles": [],
+        }
+
+    async def test_enabled_open_to_user_without_extension_read(self, client, db_session):
+        await AbacFixtures(db_session).setup(
+            users={"tester": "extensions-test-oid"},
+            roles={"device-reader": ["device.read"]},
+            teams={"t": {"roles": ["device-reader"], "users": ["tester"]}},
+        )
+        name = _unique_name("visible_ext")
+        db_session.add(ExtensionModel(name=name, description="", schema_version=1, enabled=True))
+        await db_session.commit()
+
+        assert (await client.get("/extensions")).status_code == 403
+        response = await client.get("/extensions/enabled")
+        assert response.status_code == 200
+        assert {"name": name} in response.json()
